@@ -55,7 +55,8 @@ jobs:
           $base = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.directstorage/1.3.0/microsoft.direct3d.directstorage.1.3.0.nupkg'
           $archive = Join-Path $env:RUNNER_TEMP 'directstorage-1.3.0.zip'
           Invoke-WebRequest $base -OutFile $archive
-          $expected = (Invoke-WebRequest "$base.sha512").Content.Trim()
+          # 固定从 NuGet 官方 HTTPS 包计算的摘要；该 feed 不提供独立 .sha512 文件。
+          $expected = 'WJqDGU6eBWVFI7nKEEAZgtI126qZHIU1gH1bn4Udh3KBQX15oCEPd7RsD2URT4BfShLwS3vbPeigD+IMeN73kQ=='
           $actual = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($archive)))
           if ($actual -ne $expected) { throw 'DirectStorage package SHA512 mismatch' }
           $unpacked = Join-Path $env:RUNNER_TEMP 'directstorage-1.3.0'

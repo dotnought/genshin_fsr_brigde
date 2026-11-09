@@ -1,6 +1,7 @@
 #include "HookCompatibility.h"
 
 #include <cstdio>
+#include <thread>
 
 int main()
 {
@@ -25,6 +26,34 @@ int main()
     expect(can_chain_import(&hook, &hook, &native), "already installed");
     expect(!can_chain_import(&wrapper, &hook, &native), "preserve wrapped IAT");
     expect(!can_chain_import(&native, &hook, &wrapper), "preserve native IAT in reverse order");
+    hook_compatibility::OriginalMethods methods;
+    void *native_methods[] = { &native };
+    void *wrapper_methods[] = { &wrapper };
+    methods.publish(&native, native_methods, 1);
+    methods.publish(&wrapper, wrapper_methods, 1);
+    for (int iteration = 0; iteration < 100; ++iteration)
+    {
+        expect(methods.find(&native, 0) == &native, "native original stays native");
+        expect(methods.find(&wrapper, 0) == &wrapper, "wrapper original stays wrapped");
+    }
+    expect(methods.find(&native, 1) == nullptr, "slot bounds");
+    expect(methods.find(&hook, 0) == nullptr, "unknown object");
+    methods.publish(&native, wrapper_methods, 1);
+    expect(methods.find(&native, 0) == &wrapper, "republish invalidates cached address");
+    std::atomic<bool> bad_read { false };
+    std::thread reader([&]()
+    {
+        for (int iteration = 0; iteration < 10000; ++iteration)
+        {
+            void *value = methods.find(&native, 0);
+            if (value != &native && value != &wrapper)
+                bad_read.store(true);
+        }
+    });
+    for (int iteration = 0; iteration < 1000; ++iteration)
+        methods.publish(&native, iteration % 2 == 0 ? native_methods : wrapper_methods, 1);
+    reader.join();
+    expect(!bad_read.load(), "concurrent registry publication");
     std::printf("HookCompatibilityTest: %s\n", failures == 0 ? "ALL PASS" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

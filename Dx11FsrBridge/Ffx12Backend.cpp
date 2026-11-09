@@ -1,4 +1,5 @@
 #include "Ffx12Backend.h"
+#include "HookCompatibility.h"
 #include "Ffx12ShaderSource.h"   // 两份 HLSL 正文（T-1 迁出；native 与 ngx 共用）
 #include "NgxBackend.h"          // ngx::dispatch / ngx::should_release_all（T-6 分流点）
 #include "PerfProbe.h"
@@ -80,14 +81,9 @@ bool g_dx11on12_available = false;
 bool g_gpu_only_transport_available = false;
 bool g_uses_on12_queue = false;   // 恒 false：On12 引导路径已移除（保留供 interop 上报）
 
-// 异步交叠（async upscale）：
-//   true（默认）= dispatch 只提交 FFX（不等待），Present 前 finish_pending
-//                  等待并拷贝输出——FFX 与游戏后续 GPU 工作并行（跨帧交叠）
-//   false        = dispatch 内提交+等待+拷贝（同步，输出目标始终与 Present 一致）
-// 注意：异步要求输出目标在 dispatch 与 Present 之间不变。AMD RDNA2（RX 6000 系）
-// 在游戏 HDR 渲染下输出目标逐帧双缓冲交替，会与单槽 pending 错位（黑屏与正常
-// 画面交替）——安装器/芙芙启动器按显卡写入 ini Ffx12AsyncUpscale=0（RDNA2）或
-// =1（其他显卡）；此处缺省值为非 RDNA2 的默认。
+// 2026-11-09：两种模式都在 dispatch 返回前排入输出 Wait/Copy，避免游戏读取旧结果。
+// true：GPU 异步排队，不额外 Flush 输出；false：输出队列立即 Flush（保留 RDNA2 策略）。
+// 两者均不在 CPU 等待本帧 GPU 完成；Present 钩子不再是正确性交接的前提。
 bool g_async_upscale = true;
 // 挂起的异步 FFX：P2 起 pending 槽**按实例**存放（见 InstanceRes::pending*）——
 // 原先的全局单槽会让甲实例的提交被乙实例的 dispatch 顺手落地，两路输出互相借道，
@@ -112,7 +108,7 @@ std::atomic_uint64_t g_on12_direct_dispatch_count { 0 };
 // 每帧耗时统计（诊断 GPU 空载：QPC 计时，节流输出）
 //  - prep_wait_us：dispatch 内 Wait(v_prev)（等上一轮 D3D12 完成）
 //  - prep_cs_us  ：D3D11 输入准备（深度/运动 CS + CopyResource 输入）
-//  - prep_flush_us：Flush 提交段（去 Flush 后应≈0）
+//  - prep_flush_us：输入提交段（Signal + Flush，含驱动提交开销）
 //  - signal_us   ：ctx4->Signal(v1)（隐含提交 D3D11 命令批——跨 API 交接成本）
 //  - wait12_us   ：g_queue->Wait(v1)（D3D12 队列插入等待——CPU 侧应≈0）
 //  - submit_us   ：D3D12 侧（Reset + barrier + FFX dispatch + Execute + 双 Signal）
@@ -2066,16 +2062,7 @@ bool dispatch_gpu_shared(const FrameInput &input, ID3D11DeviceContext *game_cont
 #if defined(DX11FSRBRIDGE_ENABLE_DIAGNOSTICS)
     perf_probe::add_span_us(perf_probe::Segment::interop_prep, t_cs_end - t_prep_start);
 #endif
-    // 实验：不显式 Flush——测试 ctx4->Signal(v1) 是否隐含提交排队命令
-    // （D3D11 输入 CS + 拷贝）。若驱动在 Signal 时提交，pflush 222us 归零。
-    // 风险：Signal 不隐含提交 → D3D12 Wait(v1) 超时（1s 保护）→ dispatch 失败
-    // fail-open 回退原生 FSR（不崩游戏）。有异常立即恢复 Flush。
-    const std::uint64_t t_prep_end = qpc_us();
-    g_timing.prep_flush_us.fetch_add(t_prep_end - t_cs_end, std::memory_order_relaxed);
-#if defined(DX11FSRBRIDGE_ENABLE_DIAGNOSTICS)
-    perf_probe::add_span_us(perf_probe::Segment::interop_prep, t_prep_end - t_cs_end);
-#endif
-    g_timing.prep_us.fetch_add(t_prep_end - t_prep_start, std::memory_order_relaxed);
+    // 输入 signal 之后显式提交；跨 D3D11/D3D12 的等待不能依赖驱动恰好提前提交。
     const std::uint64_t v1 = g_shared_fence_value + 1;
     const std::uint64_t t_sig_start = qpc_us();
     if (FAILED(r.game_ctx4->Signal(g_shared_fence11.Get(), v1)))
@@ -2085,6 +2072,14 @@ bool dispatch_gpu_shared(const FrameInput &input, ID3D11DeviceContext *game_cont
     perf_probe::add_span_us(perf_probe::Segment::interop_signal, qpc_us() - t_sig_start);
 #endif
     g_shared_fence_value = v1;
+    // 2026-11-09：提交生产者后再让 D3D12 等待，避免 ring 复用时互相等未提交的命令。
+    game_context->Flush();
+    const std::uint64_t t_prep_end = qpc_us();
+    g_timing.prep_flush_us.fetch_add(t_prep_end - t_cs_end, std::memory_order_relaxed);
+#if defined(DX11FSRBRIDGE_ENABLE_DIAGNOSTICS)
+    perf_probe::add_span_us(perf_probe::Segment::interop_prep, t_prep_end - t_cs_end);
+#endif
+    g_timing.prep_us.fetch_add(t_prep_end - t_prep_start, std::memory_order_relaxed);
     const std::uint64_t t_w12_start = qpc_us();
     if (FAILED(g_queue->Wait(g_shared_fence.Get(), v1)))
         return false;
@@ -2209,7 +2204,7 @@ bool dispatch_gpu_shared(const FrameInput &input, ID3D11DeviceContext *game_cont
         return false;
     }
 
-    // ---- ③ 输出交接：同步模式立即等待+拷贝；异步模式记 pending，Present 前 finish ----
+    // ---- ③ 输出交接：同步模式立即排队+提交；异步模式由 dispatch 返回前完成排队 ----
     if (!g_async_upscale)
     {
         if (FAILED(r.game_ctx4->Wait(g_shared_fence11.Get(), v2)))
@@ -2220,13 +2215,11 @@ bool dispatch_gpu_shared(const FrameInput &input, ID3D11DeviceContext *game_cont
     }
     else
     {
-        // 异步：记录**本实例**的挂起（fence 值 + 输出目标 + context），返回——游戏继续渲染，
-        // FFX 与后续 GPU 工作并行；Present 前 finish_pending 收全部实例，或本实例下一次
-        // dispatch 入口先收自己的上一帧。（P2：原先全局单槽，两实例会互相借道。）
+        // dispatch 在返回调用方之前完成此实例的 GPU Wait/Copy；游戏后续消费者不会先读旧纹理。
         r.pending = true;
         r.pending_v2 = v2;
         r.pending_output_target = input.output_target; // AddRef（ComPtr 赋值）
-        r.pending_context = game_context;              // AddRef（Present 前使用）
+        r.pending_context = game_context;              // AddRef（本次交接使用）
     }
 
     if (rc == FFX_API_RETURN_OK)
@@ -3081,9 +3074,12 @@ bool dispatch(const FrameInput &input, ID3D11DeviceContext *game_context, std::u
         if (!finish_instance(*sc))
             return false;
     }
-    const bool ok = dispatch_gpu_shared(input, game_context, *sc, reset);
-    // 计时统计：prep/submit 在 dispatch_gpu_shared 内分记；此处记 total
-    // （异步=提交即返，同步=含等待+拷贝）。wait/copy 在 finish_instance 内记。
+    const bool submitted = dispatch_gpu_shared(input, game_context, *sc, reset);
+    const bool ok = hook_compatibility::finish_upscale_submission(submitted, g_async_upscale,
+        [&]() { return finish_instance(*sc); });
+    if (!ok)
+        sc->first = true;
+    // 计时统计包含输出交接的排队；异步模式不在 CPU 等待 GPU，wait/copy 分项保持原口径。
     {
         const std::uint64_t t_now = qpc_us();
         g_timing.total_us.fetch_add(t_now - t_dispatch_start, std::memory_order_relaxed);

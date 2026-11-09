@@ -80,4 +80,11 @@ class OriginalMethods
     std::atomic<std::uint64_t> revision_ { 0 };
 };
 
+// 2026-11-09：完成输出交接后才把成功交给游戏，不能依赖可选的 Present 钩子。
+template <typename Finish>
+bool finish_upscale_submission(bool submitted, bool deferred, Finish &&finish)
+{
+    return submitted && (!deferred || finish());
+}
+
 }

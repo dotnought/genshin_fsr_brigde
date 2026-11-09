@@ -7357,9 +7357,7 @@ HRESULT STDMETHODCALLTYPE hooked_present(IDXGISwapChain *swapchain, UINT sync_in
     }
 #endif
     tone_map_hdr_backbuffer_to_sdr(swapchain, frame_index);
-    // 异步交叠（async upscale）：Present 前完成挂起的 FFX——等待输出就绪并
-    // 拷贝回游戏目标。FFX 与游戏本帧后续渲染已在 GPU 上并行（消除每帧硬停）。
-    // 无挂起时零开销（单锁内布尔检查）。
+    // 2026-11-09：正常交接已在 dispatch 返回前排队；保留已有 Present 路径的防御性收尾。
     if (ffx12::async_upscale_enabled())
         ffx12::finish_pending();
     present_fn original_present = g_original_present;

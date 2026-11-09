@@ -173,15 +173,13 @@ void get_chain_samples(ChainSampleData &out);
 // 线程安全（内部互斥）。返回 false 表示本帧失败（调用方回退）。
 bool dispatch(const FrameInput &input, ID3D11DeviceContext *game_context, std::uint64_t instance_key = 0);
 
-// 异步交叠（async upscale）：dispatch 只提交 FFX（不等待），游戏继续渲染；
-// Present 前调用 finish_pending 等待 FFX 完成并拷贝输出——FFX 与游戏后续
-// GPU 工作并行，消除渲染线程每帧硬停（GPU 负载不满来源）。
-//  - set_async_upscale(true)：dispatch 提交后立即返回（默认开启）
-//  - set_async_upscale(false)：dispatch 内提交+等待+拷贝（旧同步行为，可回退）
+// 2026-11-09：两种模式都在 dispatch 返回前排入 GPU 输出等待/拷贝，不依赖 Present 钩子。
+// true（默认）：输出随游戏后续命令提交；false：立即 Flush 输出（保留兼容性回退）。
+// 两者都不在 CPU 等待本帧 GPU 完成；失败返回 false 交给调用方回退。
 void set_async_upscale(bool enable);
 bool async_upscale_enabled();
 // 完成挂起的异步 FFX（等 fence + 拷贝输出到 output_target）。无挂起时立即返回 true。
-// 由桥在 Present 前调用；dispatch 入口也会先 finish 上一帧（防异常路径堆积）。
+// 正常路径在本次 dispatch 返回前完成；Present/下一次 dispatch 的调用仅作防御性收尾。
 bool finish_pending();
 
 // P2 诊断（**默认关**）：打开后把两类低频事件写进 SDK 消息（note 数量有上限，

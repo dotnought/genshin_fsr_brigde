@@ -54,6 +54,17 @@ int main()
         methods.publish(&native, iteration % 2 == 0 ? native_methods : wrapper_methods, 1);
     reader.join();
     expect(!bad_read.load(), "concurrent registry publication");
+    int finishes = 0;
+    int output = 0;
+    using hook_compatibility::finish_upscale_submission;
+    const auto finish = [&]() { ++finishes; output = 42; return true; };
+    expect(!finish_upscale_submission(false, true, finish), "failed submission stays failed");
+    expect(finishes == 0 && output == 0, "failed submission cannot publish");
+    expect(finish_upscale_submission(true, true, finish), "complete async handoff");
+    expect(output == 42 && finishes == 1, "consumer sees completed handoff before return");
+    expect(finish_upscale_submission(true, false, finish), "sync already completed handoff");
+    expect(finishes == 1, "sync does not duplicate handoff");
+    expect(!finish_upscale_submission(true, true, []() { return false; }), "handoff failure propagates");
     std::printf("HookCompatibilityTest: %s\n", failures == 0 ? "ALL PASS" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

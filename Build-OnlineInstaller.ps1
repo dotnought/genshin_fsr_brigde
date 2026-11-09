@@ -61,12 +61,8 @@ $optiRuntime = Join-Path $root 'SharedResources\OptiScaler\runtime'
 # FFX 运行时优先用 AMD 官方 release 的 signedbin 版本（tools\Update-UpstreamComponents.ps1 -Component FfxSdk），
 # 缺失时回退到 OptiScaler 自带的那份（兼容旧包）。
 $ffxRuntime = Join-Path $root 'SharedResources\AMD'
-$ffxDll = if (Test-Path -LiteralPath (Join-Path $ffxRuntime 'amd_fidelityfx_upscaler_dx12.dll') -PathType Leaf) {
-    Join-Path $ffxRuntime 'amd_fidelityfx_upscaler_dx12.dll'
-}
-else {
-    Join-Path $optiRuntime 'amd_fidelityfx_upscaler_dx12.dll'
-}
+# 2026-11-09：不能在下载前缓存 fallback；全新检出时 AMD 运行时尚不存在。
+$ffxDll = $null
 $dlssRuntime = Join-Path $root 'SharedResources\NVIDIA\DLSS'
 $unlockerRuntime = Join-Path $root 'SharedResources\FpsUnlocker\runtime'
 $reshadeRuntime = Join-Path $root 'SharedResources\ReShade\runtime'
@@ -813,6 +809,14 @@ if ($FetchUpstream) {
     Write-Host '正在更新上游组件（构建基线）...' -ForegroundColor Cyan
     & (Join-Path $root 'tools\Update-UpstreamComponents.ps1') -WorkspaceRoot $root
     if ($LASTEXITCODE -ne 0) { throw '上游组件更新失败。' }
+}
+
+# 下载完成后再解析路径，保证复制的 DLL 与官方 FFX 清单同源。
+$ffxDll = if (Test-Path -LiteralPath (Join-Path $ffxRuntime 'amd_fidelityfx_upscaler_dx12.dll') -PathType Leaf) {
+    Join-Path $ffxRuntime 'amd_fidelityfx_upscaler_dx12.dll'
+}
+else {
+    Join-Path $optiRuntime 'amd_fidelityfx_upscaler_dx12.dll'
 }
 
 # 规则①：**编译前**先清掉本流程会产生的 dist 产物与中间 stage 目录（按模式，见

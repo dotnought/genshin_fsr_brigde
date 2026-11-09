@@ -92,6 +92,7 @@ jobs:
           }
 
       - name: Cache Rust build dependencies
+        id: rust-cache
         uses: actions/cache@v4
         with:
           path: |
@@ -101,13 +102,32 @@ jobs:
           key: nvidia-installer-${{ runner.os }}-${{ hashFiles('Installer/app/src-tauri/Cargo.lock') }}
           restore-keys: nvidia-installer-${{ runner.os }}-
 
-      - name: Build graphical installer and assemble package
+      - name: Build graphical installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'Build-OnlineInstaller.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
           New-Item -ItemType Directory -Force release-output | Out-Null
           ./Installer/app/build-app.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+
+      - name: Preserve successful Rust build before packaging
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Installer/app/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+
+      - name: Assemble release package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
           ./Build-OnlineInstaller.ps1 -Configuration Release -GithubOnly -FetchUpstream
           if ($LASTEXITCODE -ne 0) { throw 'Release package build failed' }
           Copy-Item dist\github-release\GenshinFSRBridge_v*.7z release-output

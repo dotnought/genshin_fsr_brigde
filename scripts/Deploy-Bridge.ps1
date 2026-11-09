@@ -82,6 +82,8 @@ $configValues = [ordered]@{
     'DrawEntryFilterCanary'     = '64'  # 保险抽样：每 64 个非 3 绘制放行 1 个（默认）
     # ---- 4. 传输与性能 / Transport & performance ----
     'Ffx12GpuInterop'           = '1'
+    'ReShadeDepthCorrection'    = '1'
+    'ReShadeDepthJitterPercent' = '100'
     'Fsr2FastStateTracking'     = '1'   # 学到目标 PS hash 后旁路状态镜像钩子（必须为 1）
     # ---- 5. 画面参数（已按本游戏调优，勿改）/ Frame parameters ----
     # 运动解码：**必须为 1**。2026-09-18 实测 Ffx12MotionDecode=0（raw 变体）会**大幅加剧闪烁**

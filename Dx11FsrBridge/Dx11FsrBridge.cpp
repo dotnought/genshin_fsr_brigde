@@ -16,6 +16,7 @@
 #include "TransparentJitterHook.h"
 #include "Ffx12Backend.h"
 #include "HookCompatibility.h"
+#include "ReShadeDepth.h"
 #include "NgxBackend.h"   // ngx::set_*（D13 九键）。只有 8 个 setter 有消费者；
                           // 本头不含 NGX SDK 头，故 OFF 构型包含它也安全（REQ-08），
                           // 但下面所有 ngx:: 调用点都被 DX11FSRBRIDGE_ENABLE_NGX 守卫。
@@ -4097,6 +4098,10 @@ void load_config()
     // 异步交叠（async upscale）：默认开启——dispatch 只提交 FFX，Present 前
     // 完成交接，FFX 与游戏后续渲染并行（消除每帧硬停 → GPU 满载）。
     // 设 0 回退旧同步行为（dispatch 内等待+拷贝）。
+    // 2026-11-09：仅校正 ReShade 的独立深度副本，DLSS 参数不变。
+    reshade_depth::configure(
+        GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthCorrection", 1, config_path.c_str()) != 0,
+        static_cast<int>(GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthJitterPercent", 100, config_path.c_str())));
     ffx12::set_async_upscale(
         GetPrivateProfileIntW(L"Dx11FsrBridge", L"Ffx12AsyncUpscale", 1, config_path.c_str()) != 0);
     ffx12::set_hdr_input(g_config.ffx12_hdr_input);
@@ -12974,6 +12979,10 @@ bool try_fsr2_translation_draw(
 
                 if (ffx12::dispatch(sdk_in, context, call_params.instance))
                 {
+                    // 2026-11-09：成功接管的同一帧/同一实例才可供 ReShade 使用，快照早于深度清除。
+                    reshade_depth::capture(context, depth_tex,
+                        { sdk_in.render_w, sdk_in.render_h, sdk_in.display_w, sdk_in.display_h,
+                          sdk_in.jitter_x, sdk_in.jitter_y });
                     // ---- 【功能 · B124】① 记下本路**自己的** color 采样来源 ----
                     // ⚠️ 这一行**不是诊断**：它是 B124 归属修法的"输入归属证据"
                     //   （路径 2 的候选选择与多义拒绝的豁免判据 `claim_input_owned` 都读它）
@@ -15808,6 +15817,7 @@ void initialize()
 #endif
 
     LOG_INFO(blog::cat::core, "hook_compatibility per_object=1 system_provider=1 handoff=before_consumer");
+    reshade_depth::initialize(g_module);
     LOG_DEBUG(blog::cat::hook, std::string("d3d11_loaded=") + (GetModuleHandleW(L"d3d11.dll") != nullptr ? "1" : "0"));
     install_create_hooks_for_loaded_modules();
     install_loader_hooks_for_loaded_modules();
@@ -15889,6 +15899,7 @@ BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         // 而渲染线程可能正持该锁卡在 GPU fence 等待上（dispatch 全程持锁）。
         if (reserved != nullptr)
             ffx12::set_process_exiting();
+        reshade_depth::shutdown(reserved != nullptr);
         il2cpp_callsite::shutdown();
         // 【正式功能】透明队列抖动修复的还原。不取任何锁（只做原子交换 +
         // VirtualProtect + 校验后 memcpy），故同样满足本分支的 loader-lock 纪律。

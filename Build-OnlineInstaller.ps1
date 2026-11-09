@@ -551,6 +551,7 @@ function Prepare-FpsStage {
     $stageLicense = Join-Path $stage 'license'
     New-Item -ItemType Directory -Path $stageLicense -Force | Out-Null
     $licenseSources = @(
+        @{ Source = (Join-Path $root 'Dx11FsrBridge\third_party\reshade\LICENSE.txt'); Target = 'ReShade-SDK-LICENSE.txt' },
         @{ Source = (Join-Path $root 'SharedResources\OptiScaler-LICENSE.txt'); Target = 'OptiScaler-LICENSE.txt' },
         @{ Source = (Join-Path $root 'SharedResources\FpsUnlocker-LICENSE.txt'); Target = 'FPSUnlocker-LICENSE.txt' },
         @{ Source = (Join-Path $reshadeRuntime 'LICENSE-ReShade-BSD-3-Clause.txt'); Target = 'ReShade-LICENSE.txt' }
@@ -751,6 +752,7 @@ try {
     $stageLicense = Join-Path $stage 'license'
     New-Item -ItemType Directory -Path $stageLicense -Force | Out-Null
     $licenseSources = @(
+        @{ Source = (Join-Path $root 'Dx11FsrBridge\third_party\reshade\LICENSE.txt'); Target = 'ReShade-SDK-LICENSE.txt' },
         @{ Source = (Join-Path $root 'SharedResources\OptiScaler-LICENSE.txt'); Target = 'OptiScaler-LICENSE.txt' },
         @{ Source = (Join-Path $root 'SharedResources\FpsUnlocker-LICENSE.txt'); Target = 'FPSUnlocker-LICENSE.txt' },
         @{ Source = (Join-Path $reshadeRuntime 'LICENSE-ReShade-BSD-3-Clause.txt'); Target = 'ReShade-LICENSE.txt' }

@@ -128,6 +128,9 @@ add_library(Dx11FsrBridge SHARED
     Il2CppCallSiteHook.cpp
     TransparentJitterHook.cpp
     Ffx12Backend.cpp
+    # 2026-11-09：ReShade 6.8 SDK 固定于 18deaa52de0c425a78b329e9cb3c497281cd00ec。
+    ReShadeDepth.cpp
+    ReShadeDepthPass.cpp
 )
 
 # ⚠️ `Fsr2InputDump.cpp`（抓帧诊断）**只在诊断构建里**进源列表：
@@ -306,6 +309,11 @@ if(DX11FSRBRIDGE_BUILD_TESTS OR DX11FSRBRIDGE_BUILD_BACKEND_TEST)
 endif()
 
 if(DX11FSRBRIDGE_BUILD_TESTS)
+    add_executable(ReShadeDepthPassTest ReShadeDepthPassTest.cpp ReShadeDepthPass.cpp)
+    fsrbridge_configure_test(ReShadeDepthPassTest)
+    target_link_libraries(ReShadeDepthPassTest PRIVATE d3d11 d3dcompiler)
+    enable_testing()
+    add_test(NAME ReShadeDepthPassTest COMMAND ReShadeDepthPassTest)
     add_executable(HookCompatibilityTest HookCompatibilityTest.cpp)
     fsrbridge_configure_test(HookCompatibilityTest)
     enable_testing()

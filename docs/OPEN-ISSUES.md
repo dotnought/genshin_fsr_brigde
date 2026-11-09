@@ -189,3 +189,12 @@
 ## 已解决
 
 （暂无）
+
+
+## 9. ReShade depth correction: in-game validation pending
+
+The bridge now snapshots depth for a successfully replaced upscale and supplies a separate display-resolution, jitter-compensated DEPTH texture while ReShade renders effects. DLSS inputs remain unchanged. The configured camera/SDK jitter convention still needs visual confirmation in Genshin with NVIDIA + OptiScaler + GIMI. Spatial interpolation cannot recover missing geometry and may soften depth discontinuities.
+
+Validate stationary ViewDepth/DisplayDepth, camera motion, depth effects, scene/UI transitions, render-scale changes and resize. Check `reshade_depth_registered` and `reshade_depth_active` in the bridge log. If doubled jitter is observed, independently compare `ReShadeDepthJitterPercent=100` and `-100`. `ReShadeDepthCorrection=0` restores generic depth after restart. Standard ReShade.fxh consumers are required; custom depth paths are currently not corrected.
+
+Relevant code: `Dx11FsrBridge/ReShadeDepth.cpp`, `ReShadeDepthPass.cpp`, and the successful-upscale capture in `Dx11FsrBridge.cpp`.

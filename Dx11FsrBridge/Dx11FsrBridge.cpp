@@ -54,9 +54,9 @@
 namespace
 {
 std::once_flag g_initialize_once;
-constexpr std::size_t k_context_vtable_size = 128;
+constexpr std::size_t k_context_vtable_size = 115;
 constexpr std::size_t k_context4_vtable_size = 149;
-constexpr std::size_t k_device_vtable_size = 80;
+constexpr std::size_t k_device_vtable_size = 43;
 // DLSSG exposes the returned DX11-on-DX12 swap chain as IDXGISwapChain4.
 // Keep all inherited entries when cloning its vtable, not only the older
 // IDXGISwapChain2-sized prefix.
@@ -6025,19 +6025,49 @@ decltype(auto) call_original(Function fallback, std::size_t index, Instance *ins
     return function(instance, std::forward<Args>(args)...);
 }
 
+template <typename Interface, typename Object>
+std::size_t shared_interface_vtable_size(Object *object, std::size_t count)
+{
+    Interface *extended = nullptr;
+    if (FAILED(object->QueryInterface(__uuidof(Interface), reinterpret_cast<void **>(&extended))) ||
+        extended == nullptr)
+        return 0;
+    const bool same = static_cast<void *>(extended) == static_cast<void *>(object);
+    extended->Release();
+    return same ? count : 0;
+}
+
 std::size_t context_vtable_size(ID3D11DeviceContext *context)
 {
     if (context == nullptr)
         return k_context_vtable_size;
+    // 2026-11-09：GIMI 的 Context1 与底层 Context4 是不同对象，不能截断包装器的 134 槽表。
+    if (const auto count = shared_interface_vtable_size<ID3D11DeviceContext4>(context, 149))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11DeviceContext3>(context, 147))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11DeviceContext2>(context, 144))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11DeviceContext1>(context, 134))
+        return count;
+    return k_context_vtable_size;
+}
 
-    ID3D11DeviceContext4 *context4 = nullptr;
-    const HRESULT result = context->QueryInterface(__uuidof(ID3D11DeviceContext4), reinterpret_cast<void **>(&context4));
-    if (FAILED(result) || context4 == nullptr)
-        return k_context_vtable_size;
-
-    const bool shared_instance = static_cast<ID3D11DeviceContext *>(context4) == context;
-    context4->Release();
-    return shared_instance ? k_context4_vtable_size : k_context_vtable_size;
+std::size_t device_vtable_size(ID3D11Device *device)
+{
+    if (device == nullptr)
+        return k_device_vtable_size;
+    if (const auto count = shared_interface_vtable_size<ID3D11Device5>(device, 69))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11Device4>(device, 67))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11Device3>(device, 65))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11Device2>(device, 54))
+        return count;
+    if (const auto count = shared_interface_vtable_size<ID3D11Device1>(device, 50))
+        return count;
+    return k_device_vtable_size;
 }
 
 bool set_cloned_vtable_enabled(void *instance, bool enabled)
@@ -14633,7 +14663,7 @@ void install_device_hooks(ID3D11Device *device)
         { k_idx_device_create_compute_shader, reinterpret_cast<void *>(&hooked_create_compute_shader) },
     });
 #endif
-    clone_and_patch_vtable(device, k_device_vtable_size, patches);
+    clone_and_patch_vtable(device, device_vtable_size(device), patches);
 
     if (g_config.trace_texture_creates || g_config.native_ldr_final_target_unorm)
     {
@@ -14646,7 +14676,8 @@ void install_device_hooks(ID3D11Device *device)
             if (FAILED(device->QueryInterface(interface_id, reinterpret_cast<void **>(&extended))) || extended == nullptr)
                 return;
             const auto interface_key = reinterpret_cast<std::uint64_t>(extended);
-            clone_and_patch_vtable(extended, k_device_vtable_size, texture_patches);
+            clone_and_patch_vtable(extended, device_vtable_size(reinterpret_cast<ID3D11Device *>(extended)),
+                texture_patches);
             LOG_DEBUG(blog::cat::hook, std::string("texture_device_interface_hook interface=") + interface_name +
                 " instance=" + hex64(interface_key));
             extended->Release();

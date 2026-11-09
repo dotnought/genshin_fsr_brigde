@@ -129,6 +129,7 @@ docs/*
 AI智能体任务计划*.md
 **/NEXT-TEST-CHECKLIST*.md
 **/Feedback.txt
+!assets/FpsUnlockPackage/Feedback.txt
 
 # 本地工作目录（不进入仓库）
 # 注：archify/ 只在这里出现（上面的"研究树"块没有它），删除本行会失去忽略效果。

@@ -48,6 +48,25 @@ jobs:
           git -C OptiScaler-src submodule update --init --depth 1 -- external/FidelityFX-SDK-v2
           if ($LASTEXITCODE -ne 0) { throw 'FidelityFX header checkout failed' }
 
+      - name: Fetch official DirectStorage 1.3.0 package runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.directstorage/1.3.0/microsoft.direct3d.directstorage.1.3.0.nupkg'
+          $archive = Join-Path $env:RUNNER_TEMP 'directstorage-1.3.0.zip'
+          Invoke-WebRequest $base -OutFile $archive
+          $expected = (Invoke-WebRequest "$base.sha512").Content.Trim()
+          $actual = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($archive)))
+          if ($actual -ne $expected) { throw 'DirectStorage package SHA512 mismatch' }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'directstorage-1.3.0'
+          Expand-Archive $archive $unpacked
+          $dest = 'TextureLoader/third_party/dstorage/bin/x64'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item "$unpacked/native/bin/x64/dstorage.dll", "$unpacked/native/bin/x64/dstoragecore.dll" $dest
+          foreach ($name in @('LICENSE.txt', 'LICENSE-CODE.txt', 'NOTICES.txt')) {
+            Copy-Item (Join-Path $unpacked $name) (Join-Path 'TextureLoader/third_party/dstorage' $name)
+          }
+
       - name: Clean-build all four components and run SDK-free regression tests
         shell: pwsh
         run: |
@@ -70,6 +89,27 @@ jobs:
             cmake --build $pair[1] --clean-first
             if ($LASTEXITCODE -ne 0) { throw "Build failed: $($pair[0])" }
           }
+
+      - name: Cache Rust build dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Installer/app/src-tauri/target
+          key: nvidia-installer-${{ runner.os }}-${{ hashFiles('Installer/app/src-tauri/Cargo.lock') }}
+          restore-keys: nvidia-installer-${{ runner.os }}-
+
+      - name: Build graphical installer and assemble package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force release-output | Out-Null
+          ./Installer/app/build-app.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+          ./Build-OnlineInstaller.ps1 -Configuration Release -GithubOnly -FetchUpstream
+          if ($LASTEXITCODE -ne 0) { throw 'Release package build failed' }
+          Copy-Item dist\github-release\GenshinFSRBridge_v*.7z release-output
 
       - name: Verify release binaries and prepare test overlay
         shell: pwsh
@@ -113,26 +153,6 @@ jobs:
           Copy-Item release-output\BUILD-MANIFEST.txt release-output\overlay
           git archive --format=zip --output=release-output\GenshinFSRBridge-2.4.1-source.zip HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
-
-      - name: Cache Rust build dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            Installer/app/src-tauri/target
-          key: nvidia-installer-${{ runner.os }}-${{ hashFiles('Installer/app/src-tauri/Cargo.lock') }}
-          restore-keys: nvidia-installer-${{ runner.os }}-
-
-      - name: Build graphical installer and assemble package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          ./Installer/app/build-app.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-          ./Build-OnlineInstaller.ps1 -Configuration Release -GithubOnly -FetchUpstream
-          if ($LASTEXITCODE -ne 0) { throw 'Release package build failed' }
-          Copy-Item dist\github-release\GenshinFSRBridge_v*.7z release-output
 
       - name: Write testing and rollback instructions
         shell: pwsh

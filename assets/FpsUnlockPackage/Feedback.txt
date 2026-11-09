@@ -1,0 +1,13 @@
+NVIDIA compatibility test feedback
+
+Report results at https://github.com/dotnought/genshin_fsr_brigde/issues
+
+Include GPU model, Windows and NVIDIA driver versions, game version, DLL versions,
+selected DLSS backend/preset, and the exact DLL injection order.
+State which combination failed: Bridge; + OptiScaler; + ReShade; + GIMI.
+
+After reproducing, preserve logs before relaunching:
+Dx11FsrBridge.log, OptiScaler.log and OptiScaler.ini, ReShade.log,
+and GIMI directstorage.log when testing DirectStorage.
+
+See TESTING.txt on the prerelease page for setup and rollback instructions.

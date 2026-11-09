@@ -15,6 +15,7 @@
 #include "Il2CppCallSiteHook.h"
 #include "TransparentJitterHook.h"
 #include "Ffx12Backend.h"
+#include "HookCompatibility.h"
 #include "NgxBackend.h"   // ngx::set_*（D13 九键）。只有 8 个 setter 有消费者；
                           // 本头不含 NGX SDK 头，故 OFF 构型包含它也安全（REQ-08），
                           // 但下面所有 ngx:: 调用点都被 DX11FSRBRIDGE_ENABLE_NGX 守卫。
@@ -15192,7 +15193,8 @@ LONG WINAPI hooked_display_config_set_device_info(DISPLAYCONFIG_DEVICE_INFO_HEAD
 FARPROC WINAPI hooked_get_proc_address(HMODULE module, LPCSTR proc_name)
 {
     FARPROC address = g_original_get_proc_address(module, proc_name);
-    if (address == nullptr || proc_name == nullptr)
+    // 2026-11-09：序号查询成功时参数仍是整数资源，不能交给 strcmp（序号 5 回归复现）。
+    if (address == nullptr || hook_compatibility::is_ordinal_export(proc_name))
         return address;
 
     if (is_d3d11_module(module))

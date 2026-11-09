@@ -306,6 +306,10 @@ if(DX11FSRBRIDGE_BUILD_TESTS OR DX11FSRBRIDGE_BUILD_BACKEND_TEST)
 endif()
 
 if(DX11FSRBRIDGE_BUILD_TESTS)
+    add_executable(HookCompatibilityTest HookCompatibilityTest.cpp)
+    fsrbridge_configure_test(HookCompatibilityTest)
+    enable_testing()
+    add_test(NAME HookCompatibilityTest COMMAND HookCompatibilityTest)
     # il2cpp callsite hook：观察/跳过/还原模式 + per-instance 隔离 + 相机 hook。
     # 需链 Il2CppCallSiteHook.cpp。**此测试已实测通过**。
     add_executable(Il2CppCallSiteHookTest

@@ -15776,6 +15776,7 @@ void initialize()
     set_osd_text(L"Dx11FsrBridge OSD\n等待 DX11 dispatch 数据");
 #endif
 
+    LOG_INFO(blog::cat::core, "hook_compatibility per_object=1 system_provider=1 handoff=before_consumer");
     LOG_DEBUG(blog::cat::hook, std::string("d3d11_loaded=") + (GetModuleHandleW(L"d3d11.dll") != nullptr ? "1" : "0"));
     install_create_hooks_for_loaded_modules();
     install_loader_hooks_for_loaded_modules();

@@ -158,6 +158,34 @@
 
 ---
 
+## 8. NVIDIA + OptiScaler + ReShade + 外部 GIMI 组合待实机验证
+
+**现状**
+
+- 桥按系统 D3D11 模块路径识别入口，保留不同 IAT 下一跳；序号查询不参与名称比较。
+- 设备、上下文和 DXGI 回调按对象保存原始方法；重新安装会使线程缓存失效。
+- 成功超分的 GPU 等待/拷贝在返回游戏前排队，失败派发不发布输出；不再依赖 Present 完成正常交接。
+- `HookCompatibilityTest` 覆盖入口策略、对象/地址复用、并发发布和输出交接；模拟测试不等于驱动验证。
+
+**影响**
+
+- 尚未证明 RTX 4060 Ti / Windows 11 下 DLSS 4.5、ReShade 和 DirectStorage GIMI 能长期稳定共存；也没有帧时间或画质改善的实测结论。
+
+**推进需要**
+
+- 记录驱动版本、各组件版本及实际 DLL 加载顺序；保留旧安装目录用于回退。
+- 同场景依次验证 Bridge、Bridge + OptiScaler、增加 ReShade、再增加外部 GIMI；确认 DLSS 实际激活而非仅 DLL 已加载。
+- 覆盖冷启动、分辨率/画质切换、SDR/HDR（使用 HDR 时）、场景切换、DirectStorage 纹理加载和正常退出；比较两种 `Ffx12AsyncUpscale` 模式。
+- 反馈桥、OptiScaler、ReShade、DirectStorage 日志与画面/帧时间；旧的 TextureLoader 保持关闭，避免与外部 GIMI 重复替换。
+
+**相关代码**
+
+- `Dx11FsrBridge/Dx11FsrBridge.cpp`：系统入口识别、IAT、虚表和 DXGI 回调。
+- `Dx11FsrBridge/HookCompatibility.h`、`Dx11FsrBridge/HookCompatibilityTest.cpp`。
+- `Dx11FsrBridge/Ffx12Backend.cpp`：`dispatch_gpu_shared`、`dispatch`、`finish_instance`。
+
+---
+
 ## 已解决
 
 （暂无）

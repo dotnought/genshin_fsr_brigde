@@ -1,0 +1,191 @@
+name: NVIDIA compatibility prerelease
+
+on:
+  push:
+    branches: [feat/nvidia-compatibility]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nvidia-prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-release:
+    if: github.repository == 'dotnought/genshin_fsr_brigde'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: v2.4.1-nvidia-test.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import x64 MSVC tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'MSVC not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $snapshot = & cmd.exe /c "`"$vcvars`" >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) { throw 'vcvars64 failed' }
+          foreach ($line in $snapshot) {
+            if ($line -match '^([A-Za-z_][A-Za-z0-9_.()]*)=(.*)$') {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value $line -Encoding utf8
+            }
+          }
+
+      - name: Fetch pinned FidelityFX headers
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v0.9.4 https://github.com/optiscaler/OptiScaler.git OptiScaler-src
+          if ($LASTEXITCODE -ne 0) { throw 'OptiScaler source checkout failed' }
+          git -C OptiScaler-src submodule update --init --depth 1 -- external/FidelityFX-SDK-v2
+          if ($LASTEXITCODE -ne 0) { throw 'FidelityFX header checkout failed' }
+
+      - name: Clean-build all four components and run SDK-free regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kit = Join-Path $env:GITHUB_WORKSPACE 'OptiScaler-src\external\FidelityFX-SDK-v2\Kits\FidelityFX'
+          cmake -S Dx11FsrBridge -B build-package-bridge -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFX_SDK_KIT_ROOT="$kit" -DDX11FSRBRIDGE_ENABLE_NGX=OFF -DDX11FSRBRIDGE_BUILD_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge configure failed' }
+          cmake --build build-package-bridge --clean-first
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge build failed' }
+          ctest --test-dir build-package-bridge --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge regression tests failed' }
+          $components = @(
+            @('AntiPlayerMosaic', 'build-package-antiplayermosaic'),
+            @('TextureLoader', 'build-tloader-gdds'),
+            @('FufuGraphicsPlugin', 'build-package-fufu-graphics')
+          )
+          foreach ($pair in $components) {
+            cmake -S $pair[0] -B $pair[1] -G Ninja -DCMAKE_BUILD_TYPE=Release
+            if ($LASTEXITCODE -ne 0) { throw "Configure failed: $($pair[0])" }
+            cmake --build $pair[1] --clean-first
+            if ($LASTEXITCODE -ne 0) { throw "Build failed: $($pair[0])" }
+          }
+
+      - name: Verify release binaries and prepare test overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force release-output, release-output\overlay | Out-Null
+          $dlls = @(
+            'build-package-bridge\Dx11FsrBridge.dll',
+            'build-package-antiplayermosaic\AntiPlayerMosaic.dll',
+            'build-tloader-gdds\TextureLoader.dll',
+            'build-package-fufu-graphics\FSR-Bridge-Plugin.dll'
+          )
+          $versions = @($dlls | ForEach-Object { (Get-Item $_).VersionInfo.FileVersion })
+          $versions | Write-Host
+          if (@($versions | Select-Object -Unique).Count -ne 1 -or $versions[0] -ne '2.4.1.0') { throw 'Component version mismatch' }
+          $bridge = 'build-package-bridge\Dx11FsrBridge.dll'
+          if ((Get-Item $bridge).Length -lt 500000) { throw 'Bridge DLL unexpectedly small' }
+          $entry = Select-String -Path 'build-package-bridge\Dx11FsrBridge.map' -Pattern '\bDllMain\b' | Select-Object -First 1
+          $entry | Write-Host
+          if (-not $entry -or $entry.Line -notmatch 'Dx11FsrBridge.cpp.obj') { throw 'Wrong DllMain owner' }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $bridge))
+          if (-not [Text.Encoding]::ASCII.GetString($bytes).Contains('hook_compatibility per_object=1 system_provider=1 handoff=before_consumer')) { throw 'Compatibility build marker missing' }
+          if (-not [Text.Encoding]::Unicode.GetString($bytes).Contains('Ffx12AsyncUpscale')) { throw 'Runtime configuration key missing' }
+          git --no-pager diff -- Dx11FsrBridge/Dx11FsrBridge.cpp
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Source whitespace validation failed' }
+          $sourceBytes = [Text.Encoding]::UTF8.GetBytes((Get-Content Dx11FsrBridge\Dx11FsrBridge.cpp -Raw))
+          Write-Host "Source CR bytes: $(@($sourceBytes | Where-Object { $_ -eq 13 }).Count)"
+          $gameProcesses = @(Get-Process -Name YuanShen,GenshinImpact -ErrorAction SilentlyContinue)
+          Write-Host "Game processes on build runner: $($gameProcesses.Count)"
+          $manifest = @("Source commit: $env:GITHUB_SHA", 'Configuration: Release; NGX OFF; diagnostics OFF', 'In-game validation: pending')
+          foreach ($dll in $dlls) {
+            $item = Get-Item $dll
+            $hash = (Get-FileHash $dll -Algorithm SHA256).Hash
+            $manifest += "$($item.Name) version=$($item.VersionInfo.FileVersion) bytes=$($item.Length) SHA256=$hash"
+            Copy-Item $dll release-output\overlay
+          }
+          $manifest | Set-Content release-output\BUILD-MANIFEST.txt -Encoding utf8
+          Copy-Item Dx11FsrBridge\Dx11FsrBridge.package.ini release-output\overlay\Dx11FsrBridge.ini
+          Copy-Item Dx11FsrBridge\LICENSE release-output\overlay\LICENSE.txt
+          Copy-Item release-output\BUILD-MANIFEST.txt release-output\overlay
+          git archive --format=zip --output=release-output\GenshinFSRBridge-2.4.1-source.zip HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
+
+      - name: Cache Rust build dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Installer/app/src-tauri/target
+          key: nvidia-installer-${{ runner.os }}-${{ hashFiles('Installer/app/src-tauri/Cargo.lock') }}
+          restore-keys: nvidia-installer-${{ runner.os }}-
+
+      - name: Build graphical installer and assemble package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./Installer/app/build-app.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+          ./Build-OnlineInstaller.ps1 -Configuration Release -GithubOnly -FetchUpstream
+          if ($LASTEXITCODE -ne 0) { throw 'Release package build failed' }
+          Copy-Item dist\github-release\GenshinFSRBridge_v*.7z release-output
+
+      - name: Write testing and rollback instructions
+        shell: pwsh
+        run: |
+          @'
+          NVIDIA compatibility test build for Windows 11 / RTX 4060 Ti
+
+          This is a prerelease awaiting in-game validation. Windows builds and regression tests are checked automatically; visual correctness, performance, and long-session stability are not yet verified.
+
+          Fixes: distinguish system D3D11 from same-named wrappers; retain original callbacks per object; preserve ordinal export lookup; queue successful GPU output before returning to game consumers; never publish failed upscale output.
+
+          Setup and rollback:
+          1. Close the game. Keep your existing GIMI, configuration, and working graphics package untouched. Extract this package into a NEW folder; do not overwrite the working installation. Keep a copy of your current XXMI Inject Libraries list for rollback.
+          2. Open the included installer, select the game directory, enable Bridge and OptiScaler, and save. Enable ReShade when testing it. This prepares component paths/configuration and downloads missing ReShade/DLSS from their upstream sources. Use your existing XXMI launcher to launch the game.
+          3. In XXMI Advanced Settings > Inject Libraries, enable additional libraries. For the full-stack test, list the absolute paths in this order, one per line: payload/ReShade/ReShade64.dll; payload/Bridge/Dx11FsrBridge.dll; payload/OptiScaler/OptiScaler.dll; your EXISTING GIMI/d3d11.dll. Include the exact selected GIMI path so XXMI does not inject its DLL a second time ahead of the list. Do not replace GIMI's DirectStorage DLLs or d3dx.ini.
+          4. Keep this project's TextureLoader disabled when using GIMI. Keep Bridge's Ffx12Backend=native: OptiScaler performs the DLSS conversion. The direct ngx backend is not compiled into this build. Set OptiScaler [Libraries] OptiDllPath to the directory containing its upscaler backend DLLs if configuring manually.
+          5. In game, select FSR2 anti-aliasing and render scale below 1. In OptiScaler select DLSS and verify its active backend/runtime version; a loaded DLL alone does not prove DLSS 4.5 is active. This release does not force a particular DLSS preset. Record the NVIDIA driver, nvngx_dlss.dll version, and selected preset.
+          6. First test Bridge alone, then add OptiScaler, then ReShade, then GIMI/DirectStorage. For each stage check startup, image quality, resolution changes, scene changes, and clean exit. If using HDR, also test SDR/HDR transitions. Preserve the same scene/settings for comparisons.
+          7. After a failure, copy Dx11FsrBridge.log, OptiScaler.log and OptiScaler.ini, ReShade.log, and directstorage.log before launching again. Include which stage failed and your driver/version information. The Bridge log should contain: hook_compatibility per_object=1 system_provider=1 handoff=before_consumer.
+          8. To roll back, close the game, restore your saved XXMI Inject Libraries list and use the old package folder. Do not delete or replace your GIMI folder, Mods, or user presets. Avoid component/package self-updates while testing this exact build.
+
+          The overlay ZIP is for an existing package: back up DLLs first, then replace only matching project DLLs. Keep existing user INIs; the included Bridge INI is a reference for a fresh setup. Third-party runtimes are in the installer package or obtained by the installer, not the overlay. BUILD-MANIFEST.txt identifies the exact source and DLL hashes. Matching source is included separately.
+          '@ | Set-Content release-output\TESTING.txt -Encoding utf8
+          Copy-Item release-output\TESTING.txt release-output\overlay
+          Compress-Archive -Path release-output\overlay\* -DestinationPath release-output\GenshinFSRBridge-2.4.1-NVIDIA-overlay.zip
+          Get-ChildItem release-output -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content release-output\SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload build evidence and packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NVIDIA-compatibility-test
+          path: |
+            release-output/*.*
+            build-package-bridge/Dx11FsrBridge.map
+            build-package-bridge/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
+      - name: Publish NVIDIA test prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: NVIDIA compatibility test 2.4.1
+          prerelease: true
+          make_latest: false
+          body_path: release-output/TESTING.txt
+          fail_on_unmatched_files: true
+          files: |
+            release-output/*.7z
+            release-output/*.zip
+            release-output/BUILD-MANIFEST.txt
+            release-output/TESTING.txt
+            release-output/SHA256SUMS.txt

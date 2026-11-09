@@ -5365,6 +5365,13 @@ bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *fun
             if (std::strcmp(reinterpret_cast<const char *>(import->Name), function_name) != 0)
                 continue;
 
+            void *current = reinterpret_cast<void *>(iat[thunk_index].u1.Function);
+            if (!hook_compatibility::can_chain_import(current, replacement,
+                    original != nullptr ? *original : nullptr))
+                continue;
+            // 下一跳先于入口发布，避免另一线程先进入钩子却读到空原始函数。
+            if (original != nullptr && *original == nullptr)
+                *original = current;
             DWORD old_protect = 0;
             if (!perf_probe::virtual_protect_counted(&iat[thunk_index].u1.Function, sizeof(std::uintptr_t), PAGE_READWRITE, &old_protect))
                 return false;
@@ -5399,7 +5406,6 @@ bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *fun
                 continue;
             }
 
-            void *current = reinterpret_cast<void *>(iat[thunk_index].u1.Function);
             if (current == replacement)
             {
                 perf_probe::virtual_protect_counted(&iat[thunk_index].u1.Function, sizeof(std::uintptr_t), old_protect, &old_protect);
@@ -5460,9 +5466,6 @@ bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *fun
                 continue;
             }
 
-            // 只有**真正写入成功**才登记原始函数指针。
-            if (original != nullptr && *original == nullptr)
-                *original = current;
             return true;
         }
     }
@@ -5623,12 +5626,15 @@ bool is_d3d11_module(HMODULE module)
         return false;
 
     wchar_t path[MAX_PATH] {};
+    wchar_t system_directory[MAX_PATH] {};
     const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
-    if (length == 0)
+    const UINT system_length = GetSystemDirectoryW(system_directory, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH || system_length == 0 || system_length >= MAX_PATH)
         return false;
 
-    const std::wstring file_name = std::filesystem::path(std::wstring(path, path + length)).filename().wstring();
-    return _wcsicmp(file_name.c_str(), L"d3d11.dll") == 0;
+    // 2026-11-09：GIMI 与系统运行时同名；只接管系统出口，让包装器保留自己的下一跳。
+    const auto expected = std::filesystem::path(system_directory) / L"d3d11.dll";
+    return _wcsicmp(path, expected.c_str()) == 0;
 }
 
 bool is_user32_module(HMODULE module)
@@ -5807,7 +5813,24 @@ void install_create_hooks_for_loaded_modules()
     std::size_t swapchain_hooks = 0;
     std::size_t device_hooks = 0;
 
-    for (HMODULE module : enumerate_process_modules())
+    const auto modules = enumerate_process_modules();
+    // 2026-11-09：先固定系统出口；否则第一个游戏 IAT 可能指向 GIMI 包装器。
+    for (HMODULE module : modules)
+    {
+        if (!is_d3d11_module(module))
+            continue;
+        const auto resolve = g_original_get_proc_address != nullptr
+            ? g_original_get_proc_address : &GetProcAddress;
+        if (g_original_create_device_and_swapchain == nullptr)
+            g_original_create_device_and_swapchain = reinterpret_cast<create_device_and_swapchain_fn>(
+                resolve(module, "D3D11CreateDeviceAndSwapChain"));
+        if (g_original_create_device == nullptr)
+            g_original_create_device = reinterpret_cast<create_device_fn>(resolve(module, "D3D11CreateDevice"));
+        break;
+    }
+    if (g_original_create_device == nullptr || g_original_create_device_and_swapchain == nullptr)
+        return;
+    for (HMODULE module : modules)
     {
         if (hook_iat(module, "d3d11.dll", "D3D11CreateDeviceAndSwapChain",
                 reinterpret_cast<void *>(&hooked_create_device_and_swapchain),
@@ -15203,6 +15226,8 @@ FARPROC WINAPI hooked_get_proc_address(HMODULE module, LPCSTR proc_name)
         {
             if (g_original_create_device_and_swapchain == nullptr)
                 g_original_create_device_and_swapchain = reinterpret_cast<create_device_and_swapchain_fn>(address);
+            if (address != reinterpret_cast<FARPROC>(g_original_create_device_and_swapchain))
+                return address;
             LOG_DEBUG(blog::cat::hook, "GetProcAddress intercepted D3D11CreateDeviceAndSwapChain");
             return reinterpret_cast<FARPROC>(&hooked_create_device_and_swapchain);
         }
@@ -15211,6 +15236,8 @@ FARPROC WINAPI hooked_get_proc_address(HMODULE module, LPCSTR proc_name)
         {
             if (g_original_create_device == nullptr)
                 g_original_create_device = reinterpret_cast<create_device_fn>(address);
+            if (address != reinterpret_cast<FARPROC>(g_original_create_device))
+                return address;
             LOG_DEBUG(blog::cat::hook, "GetProcAddress intercepted D3D11CreateDevice");
             return reinterpret_cast<FARPROC>(&hooked_create_device);
         }

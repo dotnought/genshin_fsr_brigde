@@ -2202,6 +2202,13 @@ bool dispatch_gpu_shared(const FrameInput &input, ID3D11DeviceContext *game_cont
 #endif
     // （submit = D3D12 侧：Wait(v1) + allocator/list Reset + barrier + FFX dispatch + Execute + 双 Signal）
 
+    // 2026-11-09：失败仍要提交上面的 barrier/fence 收尾，但不能用旧输出覆盖原生回退。
+    if (rc != FFX_API_RETURN_OK)
+    {
+        sc.first = true;
+        return false;
+    }
+
     // ---- ③ 输出交接：同步模式立即等待+拷贝；异步模式记 pending，Present 前 finish ----
     if (!g_async_upscale)
     {

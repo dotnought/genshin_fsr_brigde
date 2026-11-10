@@ -194,6 +194,14 @@ int main()
     check_state_restore();
     auto source = make_source(13, 9, std::vector<float>(117, 0.5f));
     const reshade_depth::Frame valid { 13, 9, 29, 19, 0.1f, -0.2f };
+    ComPtr<ID3D11DeviceContext> deferred;
+    CHECK(SUCCEEDED(g_device->CreateDeferredContext(0, &deferred)));
+    CHECK(pass.capture(g_context.Get(), source.Get(), valid));
+    CHECK(pass.matches(g_context.Get(), 29, 19));
+    CHECK(!pass.matches(deferred.Get(), 29, 19));
+    CHECK(!pass.matches(g_context.Get(), 28, 19));
+    CHECK(pass.consume(g_context.Get(), 29, 19, 1.0f));
+    CHECK(!pass.capture(deferred.Get(), source.Get(), valid));
     CHECK(pass.capture(g_context.Get(), source.Get(), valid));
     CHECK(pass.consume(g_context.Get(), 28, 19, 1.0f) == nullptr);
     CHECK(pass.consume(g_context.Get(), 29, 19, 1.0f) == nullptr);

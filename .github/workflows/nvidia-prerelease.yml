@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      RELEASE_TAG: v2.4.2-depth-test.${{ github.run_number }}
+      RELEASE_TAG: v2.4.3-depth-test.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,7 +145,7 @@ jobs:
           )
           $versions = @($dlls | ForEach-Object { (Get-Item $_).VersionInfo.FileVersion })
           $versions | Write-Host
-          if (@($versions | Select-Object -Unique).Count -ne 1 -or $versions[0] -ne '2.4.2.0') { throw 'Component version mismatch' }
+          if (@($versions | Select-Object -Unique).Count -ne 1 -or $versions[0] -ne '2.4.3.0') { throw 'Component version mismatch' }
           $bridge = 'build-package-bridge\Dx11FsrBridge.dll'
           if ((Get-Item $bridge).Length -lt 500000) { throw 'Bridge DLL unexpectedly small' }
           $entry = Select-String -Path 'build-package-bridge\Dx11FsrBridge.map' -Pattern '\bDllMain\b' | Select-Object -First 1
@@ -176,7 +176,7 @@ jobs:
           Copy-Item Dx11FsrBridge\LICENSE release-output\overlay\LICENSE.txt
           Copy-Item Dx11FsrBridge\third_party\reshade\LICENSE.txt release-output\overlay\ReShade-SDK-LICENSE.txt
           Copy-Item release-output\BUILD-MANIFEST.txt release-output\overlay
-          git archive --format=zip --output=release-output\GenshinFSRBridge-2.4.2-source.zip HEAD
+          git archive --format=zip --output=release-output\GenshinFSRBridge-2.4.3-source.zip HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
 
       - name: Write testing and rollback instructions
@@ -187,11 +187,13 @@ jobs:
 
           This is a prerelease awaiting in-game validation. Windows builds and regression tests are checked automatically; visual correctness, performance, and long-session stability are not yet verified.
 
-          Depth correction test: snapshot scene depth at the successful upscale, resample it at display resolution using the same per-frame jitter, and temporarily supply it to standard ReShade DEPTH consumers. DLSS color, motion, depth and jitter inputs remain unchanged. Spatial resampling does not reconstruct native-resolution geometry; depth edges may soften and visual correctness remains unverified in Genshin.
+          Depth activation follow-up: recognize wrapped and native COM context aliases, discover DEPTH consumers independently of shader variable names, and log callback/snapshot/activation gates. This addresses cases where 2.4.2 logged reshade_depth_registered without ever logging reshade_depth_active. Generic Depth buffer selection, including Ignore List variants, is preserved. The spatial correction math is unchanged.
 
-          EXISTING WORKING 2.4.1 SETUP: close the game, back up payload/Bridge/Dx11FsrBridge.dll, then replace ONLY that DLL with the one in the overlay ZIP. Keep your existing INIs, shaders, presets, OptiScaler, ReShade and GIMI. Keep the included SDK license. No installer rerun or injection-order change is needed. Missing keys default to [Dx11FsrBridge] ReShadeDepthCorrection=1 and ReShadeDepthJitterPercent=100. ReShade must be the add-on-enabled build and loaded before the bridge, as in your existing injection order.
+          Depth correction test: snapshot scene depth at the successful upscale, resample it at display resolution using the same per-frame jitter, and temporarily supply it to ReShade DEPTH consumers. DLSS color, motion, depth and jitter inputs remain unchanged. Spatial resampling does not reconstruct native-resolution geometry; depth edges may soften and visual correctness remains unverified in Genshin.
 
-          Test ViewDepth/DisplayDepth while standing still, then rotate the camera; check depth-based effects, UI/scene transitions, render-scale changes, resize and exit. The Bridge log should show reshade_depth_registered and reshade_depth_active input=<render size> output=<display size>. No active marker means correction was not established. On an error inspect reshade_depth_fallback. If motion doubles, test ReShadeDepthJitterPercent=-100 separately to check phase/sign. ReShadeDepthCorrection=0 disables the feature after restart; restoring the backed-up DLL is a full rollback. ReShade standard reversed-depth and linearization definitions remain applicable. Effects that sample custom depth outside DEPTH are not corrected.
+          EXISTING 2.4.1 / 2.4.2 SETUP: close the game, back up payload/Bridge/Dx11FsrBridge.dll, then replace ONLY that DLL with the one in the overlay ZIP. Keep your existing INIs, shaders, presets, OptiScaler, ReShade and GIMI. Keep the included SDK license. No installer rerun or injection-order change is needed. Missing keys default to [Dx11FsrBridge] ReShadeDepthCorrection=1 and ReShadeDepthJitterPercent=100. ReShade must be the add-on-enabled build and loaded before the bridge, as in your existing injection order.
+
+          Test ViewDepth/DisplayDepth while standing still, then rotate the camera; check depth-based effects, UI/scene transitions, render-scale changes, resize and exit. The Bridge log should show reshade_depth_registered, reshade_depth_snapshot, reshade_depth_callback and reshade_depth_active input=<render size> output=<display size>. No active marker means correction was not established. On an error inspect reshade_depth_fallback. If motion doubles, test ReShadeDepthJitterPercent=-100 separately to check phase/sign. ReShadeDepthCorrection=0 disables the feature after restart; restoring the backed-up DLL is a full rollback. ReShade standard reversed-depth and linearization definitions remain applicable. Effects that sample custom depth outside DEPTH are not corrected.
 
           Below are the original instructions for a NEW installation. Existing users can use the overlay procedure above.
 
@@ -208,7 +210,7 @@ jobs:
           The overlay ZIP is for an existing package: back up DLLs first, then replace only matching project DLLs. Keep existing user INIs; the included Bridge INI is a reference for a fresh setup. Third-party runtimes are in the installer package or obtained by the installer, not the overlay. BUILD-MANIFEST.txt identifies the exact source and DLL hashes. Matching source is included separately.
           '@ | Set-Content release-output\TESTING.txt -Encoding utf8
           Copy-Item release-output\TESTING.txt release-output\overlay
-          Compress-Archive -Path release-output\overlay\* -DestinationPath release-output\GenshinFSRBridge-2.4.2-NVIDIA-overlay.zip
+          Compress-Archive -Path release-output\overlay\* -DestinationPath release-output\GenshinFSRBridge-2.4.3-NVIDIA-overlay.zip
           Get-ChildItem release-output -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object {
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
           } | Set-Content release-output\SHA256SUMS.txt -Encoding ascii
@@ -229,7 +231,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: ReShade depth correction test 2.4.2
+          name: ReShade depth correction test 2.4.3
           prerelease: true
           make_latest: false
           body_path: release-output/TESTING.txt

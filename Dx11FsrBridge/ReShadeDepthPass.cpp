@@ -1,4 +1,5 @@
 #include "ReShadeDepthPass.h"
+#include "NativeGraphicsObject.h"
 
 #include <d3dcompiler.h>
 #include <array>
@@ -81,6 +82,7 @@ void DepthPass::reset()
     constants_.Reset();
     shader_.Reset();
     context_.Reset();
+    native_context_.Reset();
     device_.Reset();
     frame_ = {};
     source_format_ = DXGI_FORMAT_UNKNOWN;
@@ -101,17 +103,22 @@ bool DepthPass::capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, co
         source.SampleDesc.Count != 1 || source.MipLevels != 1 || source.ArraySize != 1 ||
         !depth_formats(source.Format, copy_format, view_format))
         return false;
+    auto native_context = context_.Get() == context ? native_context_ : native_object(context);
+    if (!native_context) return false;
     Microsoft::WRL::ComPtr<ID3D11Device> device, source_device;
-    context->GetDevice(&device);
+    native_context->GetDevice(&device);
     depth->GetDevice(&source_device);
+    device = native_object(device.Get());
+    source_device = native_object(source_device.Get());
     if (device.Get() != source_device.Get())
         return false;
-    if (context_.Get() != context)
+    if (native_context_.Get() != native_context.Get())
     {
         reset();
-        context_ = context;
+        native_context_ = native_context;
         device_ = device;
     }
+    context_ = context;
     if (!snapshot_ || source_format_ != source.Format || frame_.render_w != frame.render_w ||
         frame_.render_h != frame.render_h || frame_.display_w != frame.display_w ||
         frame_.display_h != frame.display_h)
@@ -156,12 +163,20 @@ bool DepthPass::capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, co
     return true;
 }
 
+bool DepthPass::matches(ID3D11DeviceContext *context, std::uint32_t width, std::uint32_t height) const
+{
+    if (!context || !native_context_ || frame_.display_w != width || frame_.display_h != height)
+        return false;
+    return context == context_.Get() || context == native_context_.Get() ||
+           native_object(context).Get() == native_context_.Get();
+}
+
 ID3D11ShaderResourceView *DepthPass::consume(ID3D11DeviceContext *context,
                                            std::uint32_t width, std::uint32_t height, float scale)
 {
     const bool ready = fresh_;
     fresh_ = false;
-    if (!ready || context_.Get() != context || width != frame_.display_w || height != frame_.display_h ||
+    if (!ready || !matches(context, width, height) ||
         !std::isfinite(scale) || std::abs(scale) > 2.0f || !input_srv_ || !output_uav_)
         return nullptr;
     if (!shader_)

@@ -21,16 +21,14 @@ public:
     ID3D11ShaderResourceView *consume(ID3D11DeviceContext *context,
                                     std::uint32_t width, std::uint32_t height, float scale);
     void discard() { fresh_ = false; }
-    bool matches(ID3D11DeviceContext *context, std::uint32_t width, std::uint32_t height) const
-    {
-        return context_.Get() == context && frame_.display_w == width && frame_.display_h == height;
-    }
+    bool matches(ID3D11DeviceContext *context, std::uint32_t width, std::uint32_t height) const;
+    ID3D11ShaderResourceView *output_view() const { return output_srv_.Get(); }
     void reset();
 private:
     using Device = Microsoft::WRL::ComPtr<ID3D11Device>;
     template <typename T> using Ptr = Microsoft::WRL::ComPtr<T>;
     Device device_;
-    Ptr<ID3D11DeviceContext> context_;
+    Ptr<ID3D11DeviceContext> context_, native_context_;
     Ptr<ID3D11Texture2D> snapshot_, output_;
     Ptr<ID3D11ShaderResourceView> input_srv_, output_srv_;
     Ptr<ID3D11UnorderedAccessView> output_uav_;

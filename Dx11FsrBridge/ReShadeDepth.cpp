@@ -1,5 +1,7 @@
 #include "ReShadeDepth.h"
 #include "BridgeLogger.h"
+#include "NativeGraphicsObject.h"
+#include "ReShadeDepthBinding.h"
 #include "third_party/reshade/reshade.hpp"
 
 #include <algorithm>
@@ -28,6 +30,9 @@ struct State
     bool bound = false;
     bool wants_depth = true;
     bool pending = false;
+    bool probed = false;
+    bool callback_logged = false;
+    bool snapshot_logged = false;
     unsigned warnings = 0;
     std::uint32_t logged_w = 0, logged_h = 0;
     Frame frame {};
@@ -46,8 +51,7 @@ void warn_once(State &state, unsigned bit, const char *message)
 
 void on_begin(effect_runtime *runtime, command_list *cmd_list, resource_view, resource_view)
 {
-    if (!g_registered.load(std::memory_order_acquire) || !runtime || !cmd_list ||
-        runtime->get_device()->get_api() != device_api::d3d11)
+    if (!g_registered.load(std::memory_order_acquire) || !runtime || !cmd_list)
         return;
     State &state = *g_state;
     std::lock_guard lock(state.mutex);
@@ -56,28 +60,50 @@ void on_begin(effect_runtime *runtime, command_list *cmd_list, resource_view, re
     std::uint32_t width = 0, height = 0;
     runtime->get_screenshot_width_and_height(&width, &height);
     auto *context = reinterpret_cast<ID3D11DeviceContext *>(cmd_list->get_native());
+    if (!state.callback_logged)
+    {
+        state.callback_logged = true;
+        LOG_INFO(blog::cat::coexist, "reshade_depth_callback api=" +
+            std::to_string(static_cast<unsigned>(runtime->get_device()->get_api())) +
+            " output=" + std::to_string(width) + "x" + std::to_string(height) +
+            " native_context=" + std::to_string(reinterpret_cast<std::uintptr_t>(context)));
+    }
+    if (runtime->get_device()->get_api() != device_api::d3d11)
+    {
+        warn_once(state, 8, "unsupported_runtime_api");
+        return;
+    }
     // 2026-11-09：其它交换链/小视图不能消耗主场景快照。
     if (!state.pass.matches(context, width, height))
+    {
+        if (state.pending && (state.warnings & 16) == 0)
+        {
+            state.warnings |= 16;
+            LOG_WARN(blog::cat::coexist, "reshade_depth_fallback reason=context_or_size_mismatch expected=" +
+                std::to_string(state.frame.display_w) + "x" + std::to_string(state.frame.display_h) +
+                " runtime=" + std::to_string(width) + "x" + std::to_string(height));
+        }
         return;
+    }
     if (state.runtime != runtime)
     {
         state.runtime = runtime;
         state.anchor = { 0 };
+        state.probed = false;
     }
-    // 2026-11-09：读取标准 ReShade.fxh 的 DEPTH 绑定，结束时原样恢复，防止缺帧沿用旧输出。
-    // namespace 及编译器 unique_name 均兼容；自定义 DEPTH 名称未找到时安全放行。
-    if (state.anchor == 0)
+    // 2026-11-10：原版固定三种 DepthBufferTex 名称会静默漏掉自定义 include；按真实语义探测。
+    if (!state.probed)
     {
-        for (const char *name : { "ReShade::DepthBufferTex", "DepthBufferTex", "ReShade__DepthBufferTex" })
-        {
-            state.anchor = runtime->find_texture_variable(nullptr, name);
-            if (state.anchor != 0) break;
-        }
+        const resource_view marker { reinterpret_cast<std::uint64_t>(state.pass.output_view()) };
+        state.anchor = find_depth_binding(runtime, marker).variable;
+        state.probed = true;
     }
     state.wants_depth = state.anchor != 0;
     if (!state.wants_depth)
     {
         state.pass.discard();
+        state.pending = false;
+        warn_once(state, 32, "no_depth_semantic_consumer");
         return;
     }
     state.original = state.original_srgb = { 0 };
@@ -150,6 +176,7 @@ void on_reload(effect_runtime *runtime)
     if (g_state->runtime == runtime)
     {
         g_state->anchor = { 0 };
+        g_state->probed = false;
         g_state->wants_depth = true;
         g_state->pass.discard();
         g_state->pending = false;
@@ -165,6 +192,7 @@ void on_destroy(effect_runtime *runtime)
         g_state->bound = false;
         g_state->runtime = nullptr;
         g_state->anchor = { 0 };
+        g_state->probed = false;
         g_state->wants_depth = true;
         g_state->pass.reset();
         g_state->pending = false;
@@ -236,5 +264,14 @@ void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &
     }
     state.frame = frame;
     state.pending = true;
+    if (!state.snapshot_logged)
+    {
+        state.snapshot_logged = true;
+        LOG_INFO(blog::cat::coexist, "reshade_depth_snapshot input=" +
+            std::to_string(frame.render_w) + "x" + std::to_string(frame.render_h) +
+            " output=" + std::to_string(frame.display_w) + "x" + std::to_string(frame.display_h) +
+            " context=" + std::to_string(reinterpret_cast<std::uintptr_t>(context)) +
+            " native_context=" + std::to_string(reinterpret_cast<std::uintptr_t>(native_object(context).Get())));
+    }
 }
 }

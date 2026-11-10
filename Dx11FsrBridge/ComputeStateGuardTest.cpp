@@ -30,7 +30,7 @@ RWStructuredBuffer<uint> result : register(u0);
 AppendStructuredBuffer<uint> records : register(u1);
 #if LINKED
 interface Operation { uint apply(uint value); };
-class Identity : Operation { uint apply(uint value) { return value; } };
+class Identity : Operation { uint adjustment; uint apply(uint value) { return value + adjustment; } };
 Identity identity;
 Operation operation;
 #endif
@@ -79,10 +79,10 @@ ComPtr<ID3D11Buffer> make_buffer(UINT value)
 ComPtr<ID3D11Buffer> make_constants(UINT value)
 {
     D3D11_BUFFER_DESC desc {};
-    desc.ByteWidth = 16;
+    desc.ByteWidth = 32;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    const UINT data[4] = { value, 0, 0, 0 };
+    const UINT data[8] = { value, 0, 0, 0, 0, 0, 0, 0 };
     D3D11_SUBRESOURCE_DATA initial { data, 0, 0 };
     ComPtr<ID3D11Buffer> buffer;
     CHECK(SUCCEEDED(g_device->CreateBuffer(&desc, &initial, &buffer)));
@@ -229,23 +229,29 @@ void check_class_instances()
     g_context->ClearState();
     ComPtr<ID3D11ClassLinkage> linkage;
     CHECK(SUCCEEDED(g_device->CreateClassLinkage(&linkage)));
+    std::puts("class: linkage created");
     auto shader = make_shader(linkage.Get());
+    std::puts("class: shader created");
     ComPtr<ID3D11ClassInstance> instance;
-    CHECK(SUCCEEDED(linkage->CreateClassInstance("Identity", 0, 0, 0, 0, &instance)));
+    CHECK(SUCCEEDED(linkage->CreateClassInstance("Identity", 0, 1, 0, 0, &instance)));
+    std::puts("class: instance created");
     Work game, bridge;
     game.bind(7);
     ID3D11ClassInstance *classes[] = { instance.Get() };
     g_context->CSSetShader(shader.Get(), classes, 1);
+    std::puts("class: original state bound");
     {
         ffx12::ComputeStateGuard state(g_context.Get());
         bridge.bind(0);
     }
+    std::puts("class: state restored");
     ComPtr<ID3D11ComputeShader> actual;
     std::array<ID3D11ClassInstance *, 2> restored {};
     UINT count = static_cast<UINT>(restored.size());
     g_context->CSGetShader(&actual, restored.data(), &count);
     CHECK(actual.Get() == shader.Get() && count == 1 && restored[0] == instance.Get());
     restored[0]->Release();
+    std::puts("class: binding checked");
     g_context->Dispatch(1, 1, 1);
     CHECK(read_value(game.result.Get()) == 42);
     CHECK(read_count(game.outputs[1].Get()) == 8);

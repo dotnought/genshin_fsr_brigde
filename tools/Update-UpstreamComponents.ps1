@@ -19,6 +19,14 @@ $reshadeRuntime = Join-Path $sharedRoot 'ReShade\runtime'
 $ffxRuntime = Join-Path $sharedRoot 'AMD'
 $versionsPath = Join-Path $sharedRoot 'upstream-versions.json'
 $userAgent = 'GenshinFsrBridge-UpstreamUpdater'
+# 2026-11-10：共享 CI 出口触发匿名 API 限额；令牌仅给 api.github.com 元数据，不传给下载站。
+$githubApiHeaders = @{ 'User-Agent' = $userAgent }
+$githubApiToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
+if (-not [string]::IsNullOrWhiteSpace($githubApiToken)) {
+    $githubApiHeaders['Authorization'] = "Bearer $githubApiToken"
+}
+$githubApiToken = $null
+
 
 # ---------------------------------------------------------------------------
 # 版本基线策略（与安装脚本 Configure.ps1 / ReShadeResources.ps1 共享）：
@@ -42,7 +50,7 @@ $shaderSpec = @{
 
 function Get-GitHubReleaseAsset {
     param([string]$Repository, [scriptblock]$AssetFilter, [string]$Tag)
-    $headers = @{ 'User-Agent' = $userAgent }
+    $headers = $githubApiHeaders
     $releaseApi = if ([string]::IsNullOrWhiteSpace($Tag)) {
         "https://api.github.com/repos/$Repository/releases/latest"
     }
@@ -300,7 +308,7 @@ function Update-ReShade {
 function Update-FfxSdk {
     # FFX 运行时只认 AMD 官方渠道：FidelityFX-SDK 的 release tag（signedbin 是 AMD 签名版）。
     Write-Host '--- FFX SDK (AMD 官方 release) ---' -ForegroundColor Cyan
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/latest' -Headers @{ 'User-Agent' = $userAgent } -TimeoutSec 60
+    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/latest' -Headers $githubApiHeaders -TimeoutSec 60
     $tag = [string]$release.tag_name
     if ([string]::IsNullOrWhiteSpace($tag)) { throw '无法解析 FidelityFX-SDK 最新 tag。' }
     $rawRoot = "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/$tag"

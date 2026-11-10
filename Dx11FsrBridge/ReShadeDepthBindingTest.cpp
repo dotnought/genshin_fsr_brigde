@@ -60,6 +60,13 @@ public:
         }
         if (iid == __uuidof(IUnknown))
         {
+            ++standard_queries;
+            if (standard_identity)
+            {
+                standard_identity->AddRef();
+                *out = standard_identity;
+                return S_OK;
+            }
             AddRef();
             *out = static_cast<IUnknown *>(this);
             return S_OK;
@@ -69,6 +76,8 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
     ULONG STDMETHODCALLTYPE Release() override { return --references; }
     ULONG references = 1;
+    ULONG standard_queries = 0;
+    IUnknown *standard_identity = nullptr;
     void loop() { next_ = this; }
 private:
     IUnknown *next_;
@@ -106,6 +115,8 @@ int main()
 
     Alias native;
     Alias proxy1(&native), proxy2(&proxy1), different;
+    // 2026-11-10：模拟 GIMI 的普通 QI 重包装；解包不能再通过普通 QI 返回到外层代理。
+    native.standard_identity = &proxy1;
     {
         const auto first = reshade_depth::native_object<IUnknown>(&proxy1);
         const auto second = reshade_depth::native_object<IUnknown>(&proxy2);
@@ -113,6 +124,7 @@ int main()
         CHECK(first.Get() != reshade_depth::native_object<IUnknown>(&different).Get());
     }
     CHECK(native.references == 1 && proxy1.references == 1 && proxy2.references == 1);
+    CHECK(native.standard_queries == 0 && proxy1.standard_queries == 0 && proxy2.standard_queries == 0);
     Alias self;
     self.loop();
     { CHECK(reshade_depth::native_object<IUnknown>(&self).Get() == &self); }

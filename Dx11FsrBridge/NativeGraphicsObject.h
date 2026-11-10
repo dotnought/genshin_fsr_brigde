@@ -18,12 +18,12 @@ Microsoft::WRL::ComPtr<T> native_object(T *object)
     // 上限防御异常代理循环；只使用 COM 契约，不读取任何代理的私有内存布局。
     for (unsigned level = 0; current && level < 8; ++level)
     {
-        Microsoft::WRL::ComPtr<IUnknown> unwrapped;
-        if (FAILED(current->QueryInterface(k_unwrapped_object,
-                                          reinterpret_cast<void **>(unwrapped.GetAddressOf()))) || !unwrapped)
-            break;
         Microsoft::WRL::ComPtr<T> next;
-        if (FAILED(unwrapped.As(&next)) || next.Get() == current.Get())
+        // IID 的契约是返回原接口的底层对象；再次普通 QI 会被 GIMI 封装回代理。
+        if (FAILED(current->QueryInterface(k_unwrapped_object,
+                                          reinterpret_cast<void **>(next.GetAddressOf()))) || !next)
+            break;
+        if (next.Get() == current.Get())
             break;
         current = next;
     }

@@ -152,6 +152,7 @@ void on_finish(effect_runtime *runtime, command_list *, resource_view, resource_
 void on_present(effect_runtime *runtime)
 {
     if (!g_registered.load(std::memory_order_acquire)) return;
+    if (runtime->get_device()->get_api() != device_api::d3d11) return;
     std::lock_guard lock(g_state->mutex);
     std::uint32_t width = 0, height = 0;
     runtime->get_screenshot_width_and_height(&width, &height);

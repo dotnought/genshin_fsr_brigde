@@ -132,6 +132,9 @@ void preload(const wchar_t *path);
 ID3D11Texture2D *debug_output_texture();
 // 诊断：后端输入 color 共享纹理的 D3D11 侧（验证输入拷贝是否成功）。
 ID3D11Texture2D *debug_color_texture();
+// 2026-11-10：ReShade 的颜色引导必须来自同一实例；两项成功时均 AddRef，由调用方释放。
+bool acquire_color_guides(std::uint64_t instance_key, ID3D11Texture2D **render_color,
+                          ID3D11Texture2D **display_color);
 // 诊断：后端 D3D12 中间纹理中央像素（readback 采集）：[0]=PQ解码输出, [1]=ffxDispatch输出,
 // [2]=PQ编码输出, [3]=motion解码输出。每项 4 float (r,g,b,a)。
 void debug_pixels(float out_pixels[16]);

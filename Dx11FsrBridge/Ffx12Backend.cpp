@@ -3388,6 +3388,28 @@ ID3D11Texture2D *debug_color_texture()
     return g_mirror_color_tex.Get();
 }
 
+bool acquire_color_guides(std::uint64_t instance_key, ID3D11Texture2D **render_color,
+                          ID3D11Texture2D **display_color)
+{
+    if (!render_color || !display_color || render_color == display_color) return false;
+    *render_color = *display_color = nullptr;
+    std::lock_guard<std::timed_mutex> lock(g_mutex);
+    if (g_backend != BackendKind::Native || !g_gpu_interop_ready) return false;
+    for (const auto &sc : g_sdk_ctxs)
+    {
+        if (sc.key != instance_key || !sc.created) continue;
+        const auto &r = sc.res;
+        if (!r.tex_color.d11 || !r.tex_output.d11) return false;
+        // 2026-11-10：直接读既有共享颜色，避免两次额外全帧拷贝；同一 immediate stream 保序。
+        *render_color = r.tex_color.d11.Get();
+        *display_color = r.tex_output.d11.Get();
+        (*render_color)->AddRef();
+        (*display_color)->AddRef();
+        return true;
+    }
+    return false;
+}
+
 // 实际输入格式（桥日志诊断用）
 void input_formats(std::uint32_t &color, std::uint32_t &depth, std::uint32_t &motion, std::uint32_t &output)
 {

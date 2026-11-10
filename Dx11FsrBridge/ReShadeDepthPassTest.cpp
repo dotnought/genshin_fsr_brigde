@@ -74,6 +74,96 @@ ComPtr<ID3D11Texture2D> make_source(unsigned width, unsigned height, const std::
     return texture;
 }
 
+ComPtr<ID3D11Texture2D> make_color(unsigned width, unsigned height, const std::vector<float> &values)
+{
+    std::vector<unsigned char> rgba(width * height * 4, 255);
+    for (unsigned i = 0; i < width * height; ++i)
+        for (unsigned c = 0; c < 3; ++c)
+            rgba[4 * i + c] = static_cast<unsigned char>(std::clamp(values[i], 0.0f, 1.0f) * 255.0f);
+    D3D11_TEXTURE2D_DESC desc {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    D3D11_SUBRESOURCE_DATA data { rgba.data(), width * 4, 0 };
+    ComPtr<ID3D11Texture2D> texture;
+    CHECK(SUCCEEDED(g_device->CreateTexture2D(&desc, &data, &texture)));
+    return texture;
+}
+
+void check_guided_edges()
+{
+    constexpr unsigned rw = 13, rh = 9, dw = 29, dh = 19;
+    reshade_depth::DepthPass pass;
+    unsigned bilinear_intermediate = 0;
+    for (bool reversed : { true, false })
+        for (float edge : { 5.8f, 6.2f })
+            for (float jitter : { -0.45f, -0.15f, 0.15f, 0.45f })
+            {
+                const float foreground = reversed ? 0.8f : 0.2f;
+                const float background = reversed ? 0.2f : 0.8f;
+                std::vector<float> depths(rw * rh), low(rw * rh), high(dw * dh);
+                for (unsigned y = 0; y < rh; ++y)
+                    for (unsigned x = 0; x < rw; ++x)
+                    {
+                        const bool fg = static_cast<float>(x) - jitter >= edge;
+                        depths[y * rw + x] = fg ? foreground : background;
+                        low[y * rw + x] = fg ? 1.0f : 0.0f;
+                    }
+                for (unsigned y = 0; y < dh; ++y)
+                    for (unsigned x = 0; x < dw; ++x)
+                        high[y * dw + x] = (x + 0.5f) * rw / dw - 0.5f >= edge ? 1.0f : 0.0f;
+                auto source = make_source(rw, rh, depths);
+                auto render_color = make_color(rw, rh, low);
+                auto display_color = make_color(dw, dh, high);
+                ComPtr<ID3D11UnorderedAccessView> previous_uav;
+                CHECK(SUCCEEDED(g_device->CreateUnorderedAccessView(render_color.Get(), nullptr, &previous_uav)));
+                auto *previous = previous_uav.Get();
+                g_context->CSSetUnorderedAccessViews(0, 1, &previous, nullptr);
+                const reshade_depth::Frame frame { rw, rh, dw, dh, jitter, 0.0f, reversed };
+                CHECK(pass.capture(g_context.Get(), source.Get(), frame, render_color.Get(), display_color.Get()));
+                CHECK(pass.has_guides());
+                const auto actual = read_view(pass.consume(g_context.Get(), dw, dh, 1.0f, true));
+                ComPtr<ID3D11UnorderedAccessView> restored;
+                g_context->CSGetUnorderedAccessViews(0, 1, &restored);
+                CHECK(restored.Get() == previous_uav.Get());
+                g_context->ClearState();
+                CHECK(pass.capture(g_context.Get(), source.Get(), frame, render_color.Get(), display_color.Get()));
+                const auto baseline = read_view(pass.consume(g_context.Get(), dw, dh, 1.0f, false));
+                for (unsigned i = 0; i < dw * dh; ++i)
+                {
+                    const float expected = high[i] > 0.5f ? foreground : background;
+                    CHECK(std::abs(actual[i] - expected) < 0.00001f);
+                    if (baseline[i] > 0.21f && baseline[i] < 0.79f) ++bilinear_intermediate;
+                }
+                CHECK(read_texture(source.Get()) == depths);
+                // 2026-11-10：无效/缺失颜色只能退回原空间校正，不能沿用上一帧的引导。
+                CHECK(pass.capture(g_context.Get(), source.Get(), frame, render_color.Get(), source.Get()));
+                CHECK(!pass.has_guides());
+                const auto fallback = read_view(pass.consume(g_context.Get(), dw, dh, 1.0f, true));
+                for (unsigned i = 0; i < dw * dh; ++i)
+                    CHECK(std::abs(fallback[i] - baseline[i]) < 0.00001f);
+                CHECK(pass.capture(g_context.Get(), source.Get(), frame));
+                CHECK(!pass.has_guides());
+            }
+    CHECK(bilinear_intermediate > 0);
+    // 平坦深度上的高对比颜色不应生成虚假几何；边界尺寸和缓存复用仍需校验。
+    auto flat = make_source(rw, rh, std::vector<float>(rw * rh, 0.5f));
+    auto render_color = make_color(rw, rh, std::vector<float>(rw * rh, 0.0f));
+    auto display_color = make_color(dw, dh, std::vector<float>(dw * dh, 1.0f));
+    CHECK(pass.capture(g_context.Get(), flat.Get(), { rw, rh, dw, dh, -0.45f, 0.4f },
+                       render_color.Get(), display_color.Get()));
+    for (float value : read_view(pass.consume(g_context.Get(), dw, dh, 1.0f, true)))
+        CHECK(std::abs(value - 0.5f) < 0.00001f);
+    CHECK(pass.capture(g_context.Get(), flat.Get(), { rw, rh, dw - 1, dh, 0, 0 },
+                       render_color.Get(), display_color.Get()));
+    CHECK(!pass.has_guides());
+    CHECK(pass.consume(g_context.Get(), dw - 1, dh, 1.0f, true));
+    std::puts("Guided edges: stable silhouettes across jitter phases, moving edge, no invented ramp,");
+    std::puts("normal/reversed depth, flat surfaces, opt-out and invalid/missing/resized guides passed");
+}
+
 void check_ramp(reshade_depth::DepthPass &pass, unsigned width, unsigned height)
 {
     constexpr unsigned rw = 13, rh = 9;
@@ -157,6 +247,8 @@ void check_state_restore()
     ID3D11UnorderedAccessView *up = uav.Get();
     g_context->CSSetConstantBuffers(0, 1, &cbp);
     g_context->CSSetShaderResources(0, 1, &sp);
+    ID3D11ShaderResourceView *extras[] = { sp, sp };
+    g_context->CSSetShaderResources(1, 2, extras);
     g_context->CSSetUnorderedAccessViews(0, 1, &up, nullptr);
     reshade_depth::DepthPass pass;
     CHECK(pass.capture(g_context.Get(), source.Get(), { 13, 9, 29, 19, 0.4f, -0.2f }));
@@ -171,6 +263,10 @@ void check_state_restore()
     g_context->CSGetUnorderedAccessViews(0, 1, &auav);
     CHECK(actual.Get() == sentinel.Get() && acb.Get() == cb.Get());
     CHECK(asrv.Get() == srv.Get() && auav.Get() == uav.Get());
+    ComPtr<ID3D11ShaderResourceView> extra1, extra2;
+    g_context->CSGetShaderResources(1, 1, &extra1);
+    g_context->CSGetShaderResources(2, 1, &extra2);
+    CHECK(extra1.Get() == srv.Get() && extra2.Get() == srv.Get());
     g_context->ClearState();
 }
 }
@@ -192,6 +288,7 @@ int main()
     check_depth_format(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_D32_FLOAT);
     check_depth_format(DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_D16_UNORM);
     check_state_restore();
+    check_guided_edges();
     auto source = make_source(13, 9, std::vector<float>(117, 0.5f));
     const reshade_depth::Frame valid { 13, 9, 29, 19, 0.1f, -0.2f };
     ComPtr<ID3D11DeviceContext> deferred;
@@ -223,7 +320,9 @@ int main()
             std::vector<char> bytes(size);
             auto *message = reinterpret_cast<D3D11_MESSAGE *>(bytes.data());
             CHECK(SUCCEEDED(queue->GetMessage(i, message, &size)));
-            if (message->Severity <= D3D11_MESSAGE_SEVERITY_ERROR)
+            if (message->Severity <= D3D11_MESSAGE_SEVERITY_ERROR ||
+                message->ID == D3D11_MESSAGE_ID_DEVICE_CSSETSHADERRESOURCES_HAZARD ||
+                message->ID == D3D11_MESSAGE_ID_DEVICE_CSSETUNORDEREDACCESSVIEWS_HAZARD)
             {
                 std::fprintf(stderr, "%s\n", message->pDescription);
                 CHECK(false);

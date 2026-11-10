@@ -5,8 +5,9 @@
 
 namespace reshade_depth
 {
-void configure(bool enable, int jitter_percent);
+void configure(bool enable, int jitter_percent, bool edge_aware);
 void initialize(HMODULE module);
 void shutdown(bool process_exiting);
-void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &frame);
+void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &frame,
+              std::uint64_t instance_key);
 }

@@ -4101,7 +4101,8 @@ void load_config()
     // 2026-11-09：仅校正 ReShade 的独立深度副本，DLSS 参数不变。
     reshade_depth::configure(
         GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthCorrection", 1, config_path.c_str()) != 0,
-        static_cast<int>(GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthJitterPercent", 100, config_path.c_str())));
+        static_cast<int>(GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthJitterPercent", 100, config_path.c_str())),
+        GetPrivateProfileIntW(L"Dx11FsrBridge", L"ReShadeDepthEdgeAware", 1, config_path.c_str()) != 0);
     ffx12::set_async_upscale(
         GetPrivateProfileIntW(L"Dx11FsrBridge", L"Ffx12AsyncUpscale", 1, config_path.c_str()) != 0);
     ffx12::set_hdr_input(g_config.ffx12_hdr_input);
@@ -12982,7 +12983,7 @@ bool try_fsr2_translation_draw(
                     // 2026-11-09：成功接管的同一帧/同一实例才可供 ReShade 使用，快照早于深度清除。
                     reshade_depth::capture(context, depth_tex,
                         { sdk_in.render_w, sdk_in.render_h, sdk_in.display_w, sdk_in.display_h,
-                          sdk_in.jitter_x, sdk_in.jitter_y });
+                          sdk_in.jitter_x, sdk_in.jitter_y, ffx12::depth_inverted() }, call_params.instance);
                     // ---- 【功能 · B124】① 记下本路**自己的** color 采样来源 ----
                     // ⚠️ 这一行**不是诊断**：它是 B124 归属修法的"输入归属证据"
                     //   （路径 2 的候选选择与多义拒绝的豁免判据 `claim_input_owned` 都读它）

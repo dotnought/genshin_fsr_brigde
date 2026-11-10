@@ -1,5 +1,6 @@
 #include "ReShadeDepth.h"
 #include "BridgeLogger.h"
+#include "Ffx12Backend.h"
 #include "NativeGraphicsObject.h"
 #include "ReShadeDepthBinding.h"
 #include "third_party/reshade/reshade.hpp"
@@ -17,6 +18,7 @@ using namespace reshade::api;
 std::atomic_bool g_registered { false };
 bool g_enabled = true;
 float g_scale = 1.0f;
+bool g_edge_aware = true;
 HMODULE g_module = nullptr;
 HMODULE g_reshade_module = nullptr;
 
@@ -33,6 +35,9 @@ struct State
     bool probed = false;
     bool callback_logged = false;
     bool snapshot_logged = false;
+    bool last_active = false;
+    bool last_guided = false;
+    unsigned active_reports = 0;
     unsigned warnings = 0;
     std::uint32_t logged_w = 0, logged_h = 0;
     Frame frame {};
@@ -101,6 +106,7 @@ void on_begin(effect_runtime *runtime, command_list *cmd_list, resource_view, re
     state.wants_depth = state.anchor != 0;
     if (!state.wants_depth)
     {
+        state.last_active = false;
         state.pass.discard();
         state.pending = false;
         warn_once(state, 32, "no_depth_semantic_consumer");
@@ -110,30 +116,38 @@ void on_begin(effect_runtime *runtime, command_list *cmd_list, resource_view, re
     runtime->get_texture_binding(state.anchor, &state.original, &state.original_srgb);
     if (state.original == 0)
     {
+        state.last_active = false;
         state.pass.discard();
         warn_once(state, 1, "no_generic_depth_binding");
         return;
     }
     const bool pending = state.pending;
     state.pending = false;
-    ID3D11ShaderResourceView *view = state.pass.consume(context, width, height, g_scale);
+    ID3D11ShaderResourceView *view = state.pass.consume(context, width, height, g_scale, g_edge_aware);
     if (!view)
     {
+        state.last_active = false;
         if (pending) warn_once(state, 4, "depth_pass_or_runtime_context_mismatch");
         return;
     }
     const resource_view corrected { reinterpret_cast<std::uint64_t>(view) };
     runtime->update_texture_bindings("DEPTH", corrected, corrected);
     state.bound = true;
-    if (state.logged_w != width || state.logged_h != height)
+    const bool guided = g_edge_aware && state.pass.has_guides();
+    if ((state.logged_w != width || state.logged_h != height || !state.last_active || state.last_guided != guided) &&
+        state.active_reports < 16)
     {
+        ++state.active_reports;
         state.logged_w = width;
         state.logged_h = height;
         LOG_INFO(blog::cat::coexist, "reshade_depth_active input=" +
             std::to_string(state.frame.render_w) + "x" + std::to_string(state.frame.render_h) +
             " output=" + std::to_string(width) + "x" + std::to_string(height) +
-            " jitter_correction=1 source_unchanged=1");
+            " jitter_correction=1 source_unchanged=1 edge_aware=" +
+            std::to_string(guided ? 1 : 0));
     }
+    state.last_active = true;
+    state.last_guided = guided;
 }
 
 void on_finish(effect_runtime *runtime, command_list *, resource_view, resource_view)
@@ -181,6 +195,7 @@ void on_reload(effect_runtime *runtime)
         g_state->wants_depth = true;
         g_state->pass.discard();
         g_state->pending = false;
+        g_state->last_active = false;
     }
 }
 
@@ -196,15 +211,17 @@ void on_destroy(effect_runtime *runtime)
         g_state->probed = false;
         g_state->wants_depth = true;
         g_state->pass.reset();
+        g_state->last_active = false;
         g_state->pending = false;
     }
 }
 }
 
-void configure(bool enable, int jitter_percent)
+void configure(bool enable, int jitter_percent, bool edge_aware)
 {
     g_enabled = enable;
     g_scale = static_cast<float>(std::clamp(jitter_percent, -200, 200)) / 100.0f;
+    g_edge_aware = edge_aware;
 }
 
 void initialize(HMODULE module)
@@ -227,7 +244,7 @@ void initialize(HMODULE module)
     reshade::register_event<reshade::addon_event::reshade_present>(on_present);
     g_registered.store(true, std::memory_order_release);
     LOG_INFO(blog::cat::coexist, "reshade_depth_registered correction=1 jitter_percent=" +
-        std::to_string(static_cast<int>(g_scale * 100.0f)));
+        std::to_string(static_cast<int>(g_scale * 100.0f)) + " edge_aware=" + std::to_string(g_edge_aware ? 1 : 0));
 }
 
 void shutdown(bool process_exiting)
@@ -249,7 +266,7 @@ void shutdown(bool process_exiting)
     reshade::unregister_addon(g_module);
 }
 
-void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &frame)
+void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &frame, std::uint64_t instance_key)
 {
     if (!g_registered.load(std::memory_order_acquire))
         return;
@@ -258,13 +275,18 @@ void capture(ID3D11DeviceContext *context, ID3D11Texture2D *depth, const Frame &
     if (!state.wants_depth || state.bound)
         return;
     state.pending = false;
-    if (!state.pass.capture(context, depth, frame))
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> render_color, display_color;
+    if (g_edge_aware)
+        ffx12::acquire_color_guides(instance_key, render_color.GetAddressOf(), display_color.GetAddressOf());
+    if (!state.pass.capture(context, depth, frame, render_color.Get(), display_color.Get()))
     {
         warn_once(state, 2, "unsupported_depth_snapshot");
         return;
     }
     state.frame = frame;
     state.pending = true;
+    if (g_edge_aware && !state.pass.has_guides())
+        warn_once(state, 64, "color_guides_unavailable_using_spatial_only");
     if (!state.snapshot_logged)
     {
         state.snapshot_logged = true;

@@ -198,3 +198,10 @@ The bridge now snapshots depth for a successfully replaced upscale and supplies 
 Validate stationary ViewDepth/DisplayDepth, camera motion, depth effects, scene/UI transitions, render-scale changes and resize. Check `reshade_depth_registered` and `reshade_depth_active` in the bridge log. If doubled jitter is observed, independently compare `ReShadeDepthJitterPercent=100` and `-100`. `ReShadeDepthCorrection=0` restores generic depth after restart. Effects using the DEPTH semantic are supported regardless of variable name; custom depth paths outside DEPTH are not corrected. The 2.4.2 user log showed registration without activation; follow-up native-context normalization and semantic discovery require in-game confirmation. Check snapshot/callback/fallback markers to distinguish activation failure from residual jitter.
 
 Relevant code: `Dx11FsrBridge/ReShadeDepth.cpp`, `ReShadeDepthPass.cpp`, and the successful-upscale capture in `Dx11FsrBridge.cpp`.
+
+
+## 10. ReShade depth silhouettes: color-guided reconstruction needs in-game validation
+
+The 2.4.3 log confirms native context identity and active correction at 1720x720 -> 3440x1440. The user still sees jitter mainly on silhouettes and MXAO outlines. Bilinear depth sampling mixes different surfaces; the next test adds same-instance color-guided depth surface selection at strong discontinuities without temporal depth history. It reuses existing shared FFX color textures. Color edges need not coincide with depth edges, and missing geometry cannot be reconstructed.
+
+Compare stationary and moving silhouettes, MXAO, thin geometry, scene transitions and performance. Check `edge_aware=1` in activation logs; set `ReShadeDepthEdgeAware=0` to compare the old spatial behavior. A reported missing generic binding is a separate fallback; activation now logs again on recovery. Relevant code: `ReShadeDepthPass.cpp`, `ReShadeDepth.cpp`, `Ffx12Backend.cpp::acquire_color_guides`.

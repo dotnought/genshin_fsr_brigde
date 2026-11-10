@@ -191,17 +191,33 @@
 （暂无）
 
 
-## 9. ReShade depth correction: in-game validation pending
+## 9. ReShade depth correction: active, with residual reconstructed-normal instability
 
-The bridge now snapshots depth for a successfully replaced upscale and supplies a separate display-resolution, jitter-compensated DEPTH texture while ReShade renders effects. DLSS inputs remain unchanged. The configured camera/SDK jitter convention still needs visual confirmation in Genshin with NVIDIA + OptiScaler + GIMI. Spatial interpolation cannot recover missing geometry and may soften depth discontinuities.
+The bridge snapshots depth for a successfully replaced upscale and supplies a separate display-resolution, jitter-compensated DEPTH texture while ReShade renders effects. DLSS inputs remain unchanged. The 2.4.3 user log confirms active correction at 1720x720 -> 3440x1440, and subsequent testing reports a substantial improvement on characters and most surfaces. Activation is no longer the primary unresolved issue. Spatial interpolation cannot recover missing geometry and may soften depth discontinuities.
 
-Validate stationary ViewDepth/DisplayDepth, camera motion, depth effects, scene/UI transitions, render-scale changes and resize. Check `reshade_depth_registered` and `reshade_depth_active` in the bridge log. If doubled jitter is observed, independently compare `ReShadeDepthJitterPercent=100` and `-100`. `ReShadeDepthCorrection=0` restores generic depth after restart. Effects using the DEPTH semantic are supported regardless of variable name; custom depth paths outside DEPTH are not corrected. The 2.4.2 user log showed registration without activation; follow-up native-context normalization and semantic discovery require in-game confirmation. Check snapshot/callback/fallback markers to distinguish activation failure from residual jitter.
+Continue checking scene/UI transitions, render-scale changes and resize. `ReShadeDepthCorrection=0` restores generic depth after restart. Effects using the DEPTH semantic are supported regardless of variable name; custom depth paths outside DEPTH are not corrected. The user's Generic Depth (Ignore List) add-on retains normal depth selection with an additional ignore control; it has not been established as a cause. The bridge temporarily overrides DEPTH during effects and does not add a selectable depth-buffer entry. Check snapshot/callback/fallback markers to distinguish activation failure from residual jitter.
 
 Relevant code: `Dx11FsrBridge/ReShadeDepth.cpp`, `ReShadeDepthPass.cpp`, and the successful-upscale capture in `Dx11FsrBridge.cpp`.
 
 
-## 10. ReShade depth silhouettes: color-guided reconstruction needs in-game validation
+## 10. ReShade foliage: reconstructed normals and MXAO still flicker
 
-The 2.4.3 log confirms native context identity and active correction at 1720x720 -> 3440x1440. The user still sees jitter mainly on silhouettes and MXAO outlines. Bilinear depth sampling mixes different surfaces; the next test adds same-instance color-guided depth surface selection at strong discontinuities without temporal depth history. It reuses existing shared FFX color textures. Color edges need not coincide with depth edges, and missing geometry cannot be reconstructed.
+The 2.4.4 color-guided reconstruction substantially improves characters and most surfaces, but foliage remains unstable. The user clarified that the visible flicker is in DisplayDepth's reconstructed-normal pane and MartysMods_MXAO.fx, while the color image and displayed depth look stable. A stable grayscale depth visualization does not prove that depth gradients are stable. Launchpad smoothed normals made the reported flicker worse and are not a validated workaround.
 
-Compare stationary and moving silhouettes, MXAO, thin geometry, scene transitions and performance. Check `edge_aware=1` in activation logs; set `ReShadeDepthEdgeAware=0` to compare the old spatial behavior. A reported missing generic binding is a separate fallback; activation now logs again on recovery. Relevant code: `ReShadeDepthPass.cpp`, `ReShadeDepth.cpp`, `Ffx12Backend.cpp::acquire_color_guides`.
+Investigate normal reconstruction and the temporal stability of depth gradients before treating this as whole-image depth displacement. Color-guided surface selection uses current-frame shared FFX color textures without temporal depth history; color edges need not coincide with depth edges, and missing geometry cannot be reconstructed. Compare actual MXAO and its normal source separately from DisplayDepth, which derives its own normals. Check `edge_aware=1` in activation logs; `ReShadeDepthEdgeAware=0` provides the earlier spatial behavior. Relevant code: `ReShadeDepthPass.cpp`, `ReShadeDepth.cpp`, `Ffx12Backend.cpp::acquire_color_guides`, and the user's exact MXAO/Launchpad shaders.
+
+
+## 11. Camera-rotation FPS loss with the bridge/OptiScaler stack
+
+An RTX 4060 Ti user on Windows 11 reports an FPS drop during camera rotation. Moving the freed mouse cursor with a stationary camera does not reproduce it. The drop persists with ReShade effects disabled, ReShadeDepthCorrection=0 after restart, and FSR 3.1 selected instead of DLSS. It disappears when both Dx11FsrBridge.dll and OptiScaler.dll are removed while retaining GIMI and ReShade with effects off. The drop also returns with the bridge alone and OptiScaler removed, so OptiScaler is not required to reproduce it. Matched rendering-workload controls and profiling are still needed to identify the cause. Absolute FPS, frame-time captures, and matched render-resolution measurements are not yet available.
+
+The bridge alone is sufficient to reproduce the symptom; the exact bottleneck remains unmeasured. The shared path includes D3D11 input preparation, a producer signal/flush, a D3D12 upscaler dispatch, and a D3D11 GPU wait/output copy before consumers. Allocator-ring reuse can block the CPU until a slot's fence completes; the invalid-jitter fallback can synchronously read a constant buffer. Neither has been measured as the cause. GPU queue Wait timings describe CPU submission overhead, not GPU dependency duration. Do not remove correctness fences or add per-draw timing probes to infer a fix.
+
+Relevant code: `Ffx12Backend.cpp::dispatch_gpu_shared`, `finish_instance`, `dispatch`, and `Dx11FsrBridge.cpp::try_fsr2_translation_draw`.
+
+
+## 12. Native input preparation: compute-state restoration needs game validation
+
+The native bridge's depth/motion preparation shaders overwrote CS shader/class instances, CB0, SRV0 and UAV0-1, then left cleared or bridge-owned bindings in the game context. D3D11 state persists between calls, so a later compute dispatch may legitimately rely on the original bindings. The fix saves those slots once around both preparation passes and restores them, preserving UAV hidden counters and clearing old UAV aliases before binding inputs.
+
+Windows WARP regression coverage checks a subsequent compute dispatch without rebinding, early returns, empty initial state, input/UAV aliases, append counters and dynamic class instances. In-game rendering, compatibility and performance still require testing. This defect is not yet established as the cause of the camera-rotation FPS loss, and this change does not address foliage normal flicker. Compare against the prior bridge DLL with identical scene, resolution, cap and injection configuration. Relevant code: `ComputeStateGuard.h`, `ComputeStateGuardTest.cpp`, and `Ffx12Backend.cpp::dispatch_gpu_shared`.

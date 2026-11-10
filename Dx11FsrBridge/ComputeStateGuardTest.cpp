@@ -255,6 +255,7 @@ void check_class_instances()
 
 int main()
 {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     UINT flags = D3D11_CREATE_DEVICE_DEBUG;
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, nullptr, 0,
         D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
@@ -265,10 +266,15 @@ int main()
             D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
     }
     CHECK(SUCCEEDED(hr));
+    std::puts("stage: inherited dispatch");
     check_inherited_dispatch(false);
+    std::puts("stage: early exit");
     check_inherited_dispatch(true);
+    std::puts("stage: empty state");
     check_empty_state();
+    std::puts("stage: class instances");
     check_class_instances();
+    std::puts("stage: debug messages");
     ComPtr<ID3D11InfoQueue> messages;
     if (SUCCEEDED(g_device.As(&messages)))
     {
